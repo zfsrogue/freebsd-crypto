@@ -1,4 +1,4 @@
-# $FreeBSD$
+# $FreeBSD: release/9.1.0/cddl/lib/libzfs/Makefile 229578 2012-01-05 11:06:05Z mm $
 
 .PATH: ${.CURDIR}/../../../cddl/compat/opensolaris/misc
 .PATH: ${.CURDIR}/../../../sys/cddl/contrib/opensolaris/common/zfs
@@ -6,18 +6,21 @@
 .PATH: ${.CURDIR}/../../../cddl/contrib/opensolaris/lib/libzfs/common
 
 LIB=	zfs
-DPADD=	${LIBMD} ${LIBPTHREAD} ${LIBUMEM} ${LIBUTIL} ${LIBM} ${LIBNVPAIR}
-LDADD=	-lmd -lpthread -lumem -lutil -lm -lnvpair
+DPADD=	${LIBMD} ${LIBPTHREAD} ${LIBUMEM} ${LIBUTIL} ${LIBNVPAIR}
+LDADD=	-lmd -lpthread -lumem -lutil -lnvpair
 
 SRCS=	deviceid.c \
 	fsshare.c \
 	mkdirp.c \
 	mnttab.c \
+    crypto.c \
+    aes.c    \
 	zmount.c \
 	zone.c
 
 SRCS+=	libzfs_changelist.c \
 	libzfs_config.c \
+	libzfs_crypto.c \
 	libzfs_dataset.c \
 	libzfs_diff.c \
 	libzfs_import.c \
@@ -28,6 +31,7 @@ SRCS+=	libzfs_changelist.c \
 	libzfs_status.c \
 	libzfs_util.c \
 	zfeature_common.c \
+	zcrypt_common.c \
 	zfs_comutil.c \
 	zfs_deleg.c \
 	zfs_fletcher.c \

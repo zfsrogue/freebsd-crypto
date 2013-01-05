@@ -1028,3 +1028,4 @@ done:
 
 	return (AVL_NODE2DATA(node, off));
 }
+EXPORT_SYMBOL(avl_is_empty);

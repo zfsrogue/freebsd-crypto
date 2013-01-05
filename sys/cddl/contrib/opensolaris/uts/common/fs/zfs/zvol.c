@@ -62,6 +62,7 @@
 #include <sys/zio.h>
 #include <sys/dmu_traverse.h>
 #include <sys/dnode.h>
+#include <sys/dsl_crypto.h>
 #include <sys/dsl_dataset.h>
 #include <sys/dsl_prop.h>
 #include <sys/dkio.h>
@@ -79,6 +80,7 @@
 #include <sys/zvol.h>
 #include <sys/zil_impl.h>
 #include <sys/dbuf.h>
+#include <sys/zio_crypt.h>
 #include <geom/geom.h>
 
 #include "zfs_namecheck.h"
@@ -1344,7 +1346,7 @@ int
 zvol_dump(dev_t dev, caddr_t addr, daddr_t blkno, int nblocks)
 {
 	minor_t minor = getminor(dev);
-	zvol_state_t *zv;
+	zvol_state_t *zv = NULL;
 	int error = 0;
 	uint64_t size;
 	uint64_t boff;
@@ -1365,6 +1367,11 @@ zvol_dump(dev_t dev, caddr_t addr, daddr_t blkno, int nblocks)
 		if (error)
 			break;
 		boff += size;
+    /* Make sure we have the key loaded if we need one. */
+    error = dsl_crypto_key_inherit(name);
+    if (error != 0 && error != EEXIST)
+		goto out_dmu_objset_disown;
+
 		addr += size;
 		resid -= size;
 	}
@@ -1415,6 +1422,7 @@ zvol_read(dev_t dev, uio_t *uio, cred_t *cr)
 		}
 	}
 	zfs_range_unlock(rl);
+	if (zv) zv->zv_objset = NULL;
 	return (error);
 }
 

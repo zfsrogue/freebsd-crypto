@@ -28,6 +28,7 @@
  */
 
 #include <sys/dmu_objset.h>
+#include <sys/dsl_crypto.h>
 #include <sys/dsl_dataset.h>
 #include <sys/dsl_dir.h>
 #include <sys/dsl_prop.h>
@@ -773,16 +774,19 @@ dsl_dataset_make_exclusive(dsl_dataset_t *ds, void *owner)
 
 uint64_t
 dsl_dataset_create_sync_dd(dsl_dir_t *dd, dsl_dataset_t *origin,
-    uint64_t flags, dmu_tx_t *tx)
+    dsl_crypto_ctx_t *dcc, uint64_t flags, dmu_tx_t *tx)
 {
 	dsl_pool_t *dp = dd->dd_pool;
 	dmu_buf_t *dbuf;
 	dsl_dataset_phys_t *dsphys;
 	uint64_t dsobj;
 	objset_t *mos = dp->dp_meta_objset;
+    boolean_t keycreate = B_FALSE;
 
-	if (origin == NULL)
+	if (origin == NULL) {
 		origin = dp->dp_origin_snap;
+        keycreate = B_TRUE;
+    }
 
 	ASSERT(origin == NULL || origin->ds_dir->dd_pool == dp);
 	ASSERT(origin == NULL || origin->ds_phys->ds_num_children > 0);
@@ -810,6 +814,9 @@ dsl_dataset_create_sync_dd(dsl_dir_t *dd, dsl_dataset_t *origin,
 
 	if (origin == NULL) {
 		dsphys->ds_deadlist_obj = dsl_deadlist_alloc(mos, tx);
+        if (dcc)
+            VERIFY3U(0, ==, dsl_crypto_key_create(dd, dsphys,
+                                                  dsobj, dcc, tx));
 	} else {
 		dsl_dataset_t *ohds;
 
@@ -832,6 +839,13 @@ dsl_dataset_create_sync_dd(dsl_dir_t *dd, dsl_dataset_t *origin,
 		    origin->ds_dir->dd_phys->dd_head_dataset_obj, FTAG, &ohds));
 		dsphys->ds_deadlist_obj = dsl_deadlist_clone(&ohds->ds_deadlist,
 		    dsphys->ds_prev_snap_txg, dsphys->ds_prev_snap_obj, tx);
+        if (dcc && keycreate) {
+            VERIFY3U(0, ==, dsl_crypto_key_create(dd, dsphys,
+                                                  dsobj, dcc, tx));
+        } else if (dcc) {
+            VERIFY3U(0, ==, dsl_crypto_key_clone(dd, dsphys,
+                                                 dsobj, origin, dcc, tx));
+        }
 		dsl_dataset_rele(ohds, FTAG);
 
 		if (spa_version(dp->dp_spa) >= SPA_VERSION_NEXT_CLONES) {
@@ -859,6 +873,18 @@ dsl_dataset_create_sync_dd(dsl_dir_t *dd, dsl_dataset_t *origin,
 		}
 	}
 
+    /*
+     * Increase number of encrypted fs here, changing feature
+     * from 'enabled' to 'active'.
+     */
+    if (dcc && (dcc->dcc_crypt != ZIO_CRYPT_OFF) &&
+        spa_feature_is_enabled(dp->dp_spa,
+                               &spa_feature_table[SPA_FEATURE_ENCRYPTION])) {
+        spa_feature_incr(dp->dp_spa,
+                         &spa_feature_table[SPA_FEATURE_ENCRYPTION],
+                         tx);
+    }
+
 	if (spa_version(dp->dp_spa) >= SPA_VERSION_UNIQUE_ACCURATE)
 		dsphys->ds_flags |= DS_FLAG_UNIQUE_ACCURATE;
 
@@ -872,7 +898,7 @@ dsl_dataset_create_sync_dd(dsl_dir_t *dd, dsl_dataset_t *origin,
 
 uint64_t
 dsl_dataset_create_sync(dsl_dir_t *pdd, const char *lastname,
-    dsl_dataset_t *origin, uint64_t flags, cred_t *cr, dmu_tx_t *tx)
+                        dsl_dataset_t *origin, struct dsl_crypto_ctx *dcc, uint64_t flags, cred_t *cr, dmu_tx_t *tx)
 {
 	dsl_pool_t *dp = pdd->dd_pool;
 	uint64_t dsobj, ddobj;
@@ -883,7 +909,7 @@ dsl_dataset_create_sync(dsl_dir_t *pdd, const char *lastname,
 	ddobj = dsl_dir_create_sync(dp, pdd, lastname, tx);
 	VERIFY(0 == dsl_dir_open_obj(dp, ddobj, lastname, FTAG, &dd));
 
-	dsobj = dsl_dataset_create_sync_dd(dd, origin, flags, tx);
+	dsobj = dsl_dataset_create_sync_dd(dd, origin, dcc, flags, tx);
 
 	dsl_deleg_set_create_perms(dd, tx, cr);
 
@@ -1079,11 +1105,14 @@ dsl_dataset_destroy(dsl_dataset_t *ds, void *tag, boolean_t defer)
 	dsl_sync_task_group_t *dstg;
 	objset_t *os;
 	dsl_dir_t *dd;
-	uint64_t obj;
+	uint64_t obj, dsobj;
 	struct dsl_ds_destroyarg dsda = { 0 };
 	dsl_dataset_t dummy_ds = { 0 };
+    spa_t *spa;
 
 	dsda.ds = ds;
+    dsobj = ds->ds_object;
+    spa = dsl_dataset_get_spa(ds);
 
 	if (dsl_dataset_is_snapshot(ds)) {
 		/* Destroying a snapshot is simpler */
@@ -1145,7 +1174,8 @@ dsl_dataset_destroy(dsl_dataset_t *ds, void *tag, boolean_t defer)
 		 * context, the user space accounting should be zero.
 		 */
 		if (ds->ds_phys->ds_bp.blk_fill == 0 &&
-		    dmu_objset_userused_enabled(os)) {
+            dmu_objset_userused_enabled(os)  &&
+            !ds->ds_objset->os_destroy_nokey) {
 			uint64_t count;
 
 			ASSERT(zap_count(os, DMU_USERUSED_OBJECT,
@@ -1205,8 +1235,12 @@ dsl_dataset_destroy(dsl_dataset_t *ds, void *tag, boolean_t defer)
 		dsl_dataset_disown(dsda.rm_origin, tag);
 
 	/* if it is successful, dsl_dir_destroy_sync will close the dd */
-	if (err)
+	if (err) {
 		dsl_dir_close(dd, FTAG);
+    } else {
+        /* Remove the key from the keystore for encrypted datasets. */
+        err = zcrypt_keystore_remove(spa, dsobj);
+    }
 out:
 	dsl_dataset_disown(ds, tag);
 	return (err);
@@ -1914,6 +1948,14 @@ dsl_dataset_destroy_sync(void *arg1, void *tag, dmu_tx_t *tx)
 
 		VERIFY3U(0, ==, dmu_objset_from_ds(ds, &os));
 
+        if ((os->os_crypt != ZIO_CRYPT_OFF) &&
+            spa_feature_is_enabled(dp->dp_spa,
+                                   &spa_feature_table[SPA_FEATURE_ENCRYPTION])) {
+            spa_feature_decr(dp->dp_spa,
+                             &spa_feature_table[SPA_FEATURE_ENCRYPTION],
+                             tx);
+        }
+
 		if (!spa_feature_is_enabled(dp->dp_spa, async_destroy)) {
 			err = old_synchronous_dataset_destroy(ds, tx);
 		} else {
@@ -2323,6 +2365,8 @@ dsl_dataset_stats(dsl_dataset_t *ds, nvlist_t *nv)
 	    ds->ds_userrefs);
 	dsl_prop_nvlist_add_uint64(nv, ZFS_PROP_DEFER_DESTROY,
 	    DS_IS_DEFER_DESTROY(ds) ? 1 : 0);
+    dsl_prop_nvlist_add_uint64(nv, ZFS_PROP_KEYSTATUS,
+        dsl_dataset_keystatus(ds, B_FALSE));
 
 	if (ds->ds_phys->ds_prev_snap_obj != 0) {
 		uint64_t written, comp, uncomp;

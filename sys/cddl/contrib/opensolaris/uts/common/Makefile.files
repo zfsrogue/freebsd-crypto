@@ -21,7 +21,6 @@
 
 #
 # Copyright (c) 1991, 2010, Oracle and/or its affiliates. All rights reserved.
-# Copyright (c) 2012 by Delphix. All rights reserved.
 #
 #
 # This Makefile defines all file modules for the directory uts/common
@@ -32,7 +31,6 @@ ZFS_COMMON_OBJS +=		\
 	arc.o			\
 	bplist.o		\
 	bpobj.o			\
-	bptree.o		\
 	dbuf.o			\
 	ddt.o			\
 	ddt_zap.o		\
@@ -54,7 +52,6 @@ ZFS_COMMON_OBJS +=		\
 	dsl_deleg.o		\
 	dsl_prop.o		\
 	dsl_scan.o		\
-	zfeature.o		\
 	gzip.o			\
 	lzjb.o			\
 	metaslab.o		\
@@ -67,6 +64,7 @@ ZFS_COMMON_OBJS +=		\
 	spa_history.o		\
 	spa_misc.o		\
 	space_map.o		\
+        trim_map.o              \
 	txg.o			\
 	uberblock.o		\
 	unique.o		\
@@ -97,12 +95,12 @@ ZFS_COMMON_OBJS +=		\
 	zrlock.o
 
 ZFS_SHARED_OBJS +=		\
-	zfeature_common.o	\
-	zfs_comutil.o		\
+	zcrypt_common.o		\
+    	zfs_namecheck.o		\
 	zfs_deleg.o		\
-	zfs_fletcher.o		\
-	zfs_namecheck.o		\
 	zfs_prop.o		\
+	zfs_comutil.o		\
+	zfs_fletcher.o		\
 	zpool_prop.o		\
 	zprop_common.o
 

@@ -1,4 +1,4 @@
-# $FreeBSD$
+# $FreeBSD: release/9.1.0/cddl/usr.bin/ztest/Makefile 219089 2011-02-27 19:41:40Z pjd $
 
 .PATH: ${.CURDIR}/../..//contrib/opensolaris/cmd/ztest
 
@@ -19,12 +19,9 @@ CFLAGS+= -I${.CURDIR}/../../contrib/opensolaris/head
 CFLAGS+= -I${.CURDIR}/../../lib/libumem
 
 DPADD=	${LIBGEOM} ${LIBM} ${LIBNVPAIR} ${LIBUMEM} ${LIBZPOOL} \
-	${LIBPTHREAD} ${LIBAVL} ${LIBZFS} ${LIBUUTIL}
-LDADD=	-lgeom -lm -lnvpair -lumem -lzpool -lpthread -lavl -lzfs -luutil
+	${LIBPTHREAD} ${LIBZ} ${LIBAVL} ${LIBZFS} ${LIBUUTIL}
+LDADD=	-lgeom -lm -lnvpair -lumem -lzpool -lpthread -lz -lavl -lzfs -luutil
 
 CSTD=	c99
-
-CFLAGS+= -DDEBUG=1
-#DEBUG_FLAGS+=	-g
 
 .include <bsd.prog.mk>

@@ -31,7 +31,8 @@
 
 #include_next <sys/random.h>
 
-#define	random_get_bytes(p, s)		read_random((p), (int)(s))
+/* Solaris random_get_bytes() return 0 on success */
+#define	random_get_bytes(p, s)		(read_random((p), (int)(s)) != (int)(s))
 #define	random_get_pseudo_bytes(p, s)	read_random((p), (int)(s))
 
 #endif	/* !_OPENSOLARIS_SYS_RANDOM_H_ */

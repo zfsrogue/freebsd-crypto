@@ -38,6 +38,7 @@
 #include <sys/refcount.h>
 #include <sys/bplist.h>
 #include <sys/bpobj.h>
+#include <sys/zcrypt.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -226,6 +227,7 @@ struct spa {
 	boolean_t	spa_autoreplace;	/* autoreplace set in open */
 	int		spa_vdev_locks;		/* locks grabbed */
 	uint64_t	spa_creation_version;	/* version at pool creation */
+    zcrypt_keystore_t *spa_keystore;        /* Crypto keystore */
 	uint64_t	spa_prev_software_version; /* See ub_software_version */
 	uint64_t	spa_feat_for_write_obj;	/* required to write to pool */
 	uint64_t	spa_feat_for_read_obj;	/* required to read from pool */

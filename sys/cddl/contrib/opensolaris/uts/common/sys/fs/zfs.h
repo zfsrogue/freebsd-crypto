@@ -128,6 +128,11 @@ typedef enum {
 	ZFS_PROP_DEDUP,
 	ZFS_PROP_MLSLABEL,
 	ZFS_PROP_SYNC,
+    ZFS_PROP_ENCRYPTION,
+    ZFS_PROP_KEYSOURCE,
+    ZFS_PROP_KEYSTATUS,
+    ZFS_PROP_SALT,                  /* not exposed to the user */
+    ZFS_PROP_REKEYDATE,
 	ZFS_PROP_REFRATIO,
 	ZFS_PROP_WRITTEN,
 	ZFS_PROP_CLONES,
@@ -356,6 +361,7 @@ typedef enum {
 #define	SPA_VERSION_27			27ULL
 #define	SPA_VERSION_28			28ULL
 #define	SPA_VERSION_5000		5000ULL
+
 
 /*
  * When bumping up SPA_VERSION, make sure GRUB ZFS understands the on-disk
@@ -817,6 +823,11 @@ typedef	unsigned long	zfs_ioc_t;
 #define	ZFS_IOC_SPACE_SNAPS		_IOWR('Z', 62, struct zfs_cmd)
 #define	ZFS_IOC_SEND_PROGRESS		_IOWR('Z', 63, struct zfs_cmd)
 #define	ZFS_IOC_POOL_REOPEN		_IOWR('Z', 64, struct zfs_cmd)
+#define	ZFS_IOC_CRYPTO_KEY_LOAD		_IOWR('Z', 65, struct zfs_cmd)
+#define	ZFS_IOC_CRYPTO_KEY_UNLOAD		_IOWR('Z', 66, struct zfs_cmd)
+#define	ZFS_IOC_CRYPTO_KEY_INHERIT		_IOWR('Z', 67, struct zfs_cmd)
+#define	ZFS_IOC_CRYPTO_KEY_CHANGE		_IOWR('Z', 68, struct zfs_cmd)
+#define	ZFS_IOC_CRYPTO_KEY_NEW		_IOWR('Z', 69, struct zfs_cmd)
 
 /*
  * Internal SPA load state.  Used by FMA diagnosis engine.
@@ -944,6 +955,8 @@ typedef enum history_internal_events {
 	LOG_DS_USER_HOLD,
 	LOG_DS_USER_RELEASE,
 	LOG_POOL_SPLIT,
+    LOG_DS_CRYPTO_KEY_CREATE,
+    LOG_DS_CRYPTO_KEY_CHANGE,
 	LOG_END
 } history_internal_events_t;
 

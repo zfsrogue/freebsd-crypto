@@ -611,22 +611,6 @@ zfs_open(libzfs_handle_t *hdl, const char *path, int types)
 		return (NULL);
 	}
 
-	if (zhp == NULL) {
-		char *at = strchr(path, '@');
-
-		if (at != NULL)
-			*at = '\0';
-		errno = 0;
-		if ((zhp = make_dataset_handle(hdl, path)) == NULL) {
-			(void) zfs_standard_error(hdl, errno, errbuf);
-			return (NULL);
-		}
-		if (at != NULL)
-			*at = '@';
-		(void) strlcpy(zhp->zfs_name, path, sizeof (zhp->zfs_name));
-		zhp->zfs_type = ZFS_TYPE_SNAPSHOT;
-	}
-
 	if (!(types & zhp->zfs_type)) {
 		(void) zfs_error(hdl, EZFS_BADTYPE, errbuf);
 		zfs_close(zhp);
@@ -1235,6 +1219,117 @@ badlabel:
 		case ZFS_PROP_NORMALIZE:
 			chosen_normal = (int)intval;
 			break;
+        case ZFS_PROP_CHECKSUM:
+            if (zhp != NULL && zfs_prop_get_int(zhp,
+                                   ZFS_PROP_ENCRYPTION) != ZIO_CRYPT_OFF) {
+                zfs_error_aux(hdl,
+                              dgettext(TEXT_DOMAIN,
+                                       "'%s' cannot be changed on encrypted "
+                                       "datasets."), propname);
+                (void) zfs_error(hdl, EZFS_PROPREADONLY,
+                                 errbuf);
+                goto error;
+            }
+            break;
+
+        case ZFS_PROP_COPIES:
+            if (intval >= 3 &&
+                ((zhp != NULL && zfs_prop_get_int(zhp,
+                                  ZFS_PROP_ENCRYPTION) != ZIO_CRYPT_OFF) ||
+                 (nvlist_lookup_string(nvl,
+                              zfs_prop_to_name(ZFS_PROP_ENCRYPTION),
+                              &strval) == 0 && strcmp(strval, "off") != 0))) {
+                zfs_error_aux(hdl,
+                              dgettext(TEXT_DOMAIN,
+                                   "copies cannot be set to 3 on encrypted "
+                                   "datasets."));
+                (void) zfs_error(hdl, EZFS_BADPROP,
+                                 errbuf);
+                goto error;
+            }
+            break;
+
+        case ZFS_PROP_ENCRYPTION:
+            /* This is creation time only */
+            if (zhp != NULL) {
+                zfs_error_aux(hdl,
+                              dgettext(TEXT_DOMAIN, "encryption "
+                                       "can only be set at creation time."));
+                (void) zfs_error(hdl,
+                                 EZFS_PROPREADONLY, errbuf);
+                goto error;
+            }
+
+            /*
+             * If the user explicitly defined encryption as off,
+             * we need to skip the checksum requirement.
+             */
+            if (intval == ZIO_CRYPT_OFF)
+                break;
+
+            /*
+             * Since encryption is on, we must make sure the user
+             * did not specify a checksum so we can set it to
+             * the crypto default
+             */
+            if (nvlist_lookup_string(nvl,
+                                     zfs_prop_to_name(ZFS_PROP_CHECKSUM),
+                                     &strval) == 0) {
+                zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+                                        "encryption requires that checksum "
+                                        "not be set."));
+                (void) zfs_error(hdl,
+                                 EZFS_PROPREADONLY, errbuf);
+                goto error;
+            }
+
+            (void) nvlist_add_string(nvl,
+                        zfs_prop_to_name(ZFS_PROP_CHECKSUM), "sha256-mac");
+
+            break;
+
+
+        case ZFS_PROP_KEYSOURCE: {
+            /*
+             * All existing keysource can be set and changed if
+             * meet the valid_set_keysource_change() conditions
+             */
+
+            if (zhp != NULL) {
+                char keysrc[ZFS_MAXPROPLEN] = { 0 };
+                int ret;
+
+                ret = zfs_prop_get(zhp, ZFS_PROP_KEYSOURCE,
+                                   keysrc, MAXNAMELEN, NULL, NULL, 0, B_TRUE);
+                if (ret) {
+                    zfs_error_aux(hdl,
+                                  dgettext(TEXT_DOMAIN,
+                                           "error getting keysource."));
+                    (void) zfs_error(hdl, EZFS_KEYERR,
+                                     errbuf);
+                    goto error;
+                }
+                if (!zfs_valid_set_keysource_change(zhp, keysrc,
+                                                    strval)) {
+                    zfs_error_aux(hdl,
+                                  dgettext(TEXT_DOMAIN,
+                                           "invalid keysource change."));
+                    (void) zfs_error(hdl, EZFS_KEYERR,
+                                     errbuf);
+                    goto error;
+                }
+
+                break;
+            }
+
+            if (!zfs_valid_keysource(strval)) {
+                zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+                                            "invalid keysource."), propname);
+                (void) zfs_error(hdl, EZFS_KEYERR, errbuf);
+                goto error;
+
+            }
+        }
 		}
 
 		/*
@@ -1377,6 +1472,7 @@ zfs_setprop_error(libzfs_handle_t *hdl, zfs_prop_t prop, int err,
 			(void) zfs_error(hdl, EZFS_PROPSPACE, errbuf);
 			break;
 
+
 		default:
 			(void) zfs_standard_error(hdl, err, errbuf);
 			break;
@@ -1446,7 +1542,7 @@ zfs_prop_set(zfs_handle_t *zhp, const char *propname, const char *propval)
 	libzfs_handle_t *hdl = zhp->zfs_hdl;
 	nvlist_t *nvl = NULL, *realprops;
 	zfs_prop_t prop;
-	boolean_t do_prefix = B_TRUE;
+	boolean_t do_prefix;
 	uint64_t idx;
 	int added_resv;
 
@@ -1609,6 +1705,15 @@ zfs_prop_inherit(zfs_handle_t *zhp, const char *propname, boolean_t received)
 
 	if (!zfs_prop_inheritable(prop) && !received)
 		return (zfs_error(hdl, EZFS_PROPNONINHERIT, errbuf));
+
+	/*
+     * keysource property can only change via 'zfs key -c -o keysource'
+     */
+    if (prop == ZFS_PROP_KEYSOURCE) {
+        zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+                                    "use 'zfs key -c -o keysource=...'"));
+        return (zfs_error(hdl, EZFS_PROPREADONLY, errbuf));
+    }
 
 	/*
 	 * Check to see if the value applies to this type
@@ -2136,6 +2241,27 @@ zfs_prop_get(zfs_handle_t *zhp, zfs_prop_t prop, char *propbuf, size_t proplen,
 				(void) snprintf(propbuf, proplen, "%llu", val);
 		}
 		break;
+
+    case ZFS_PROP_REKEYDATE:
+        /*
+         * 'creation' is a time_t stored in the statistics.  We convert
+         * this into a string unless 'literal' is specified.
+         */ // FIXME, same comment as creation, also in original
+        {
+            val = getprop_uint64(zhp, prop, &source);
+            time_t time = (time_t)val;
+            struct tm t;
+
+            if (val == 0) {
+                (void) snprintf(propbuf, proplen, "-");
+            } else if (literal ||
+                       localtime_r(&time, &t) == NULL ||
+                       strftime(propbuf, proplen, "%a %b %e %k:%M %Y",
+                                &t) == 0) {
+                (void) snprintf(propbuf, proplen, "%llu", val);
+            }
+        }
+        break;
 
 	case ZFS_PROP_MOUNTPOINT:
 		/*
@@ -2789,6 +2915,24 @@ parent_name(const char *path, char *buf, size_t buflen)
 }
 
 /*
+ * Given a complete name, return just the portion that refers to the parent.
+ * Returns -1 if this is a pool.
+ */
+int
+zfs_parent_name(const char *path, char *buf, size_t buflen)
+{
+    char *loc;
+
+    if ((loc = strrchr(path, '/')) == NULL)
+        return (-1);
+
+    (void) strncpy(buf, path, MIN(buflen, loc - path));
+    buf[loc - path] = '\0';
+
+    return (0);
+}
+
+/*
  * If accept_ancestor is false, then check to make sure that the given path has
  * a parent, and that it exists.  If accept_ancestor is true, then find the
  * closest existing ancestor for the given path.  In prefixlen return the
@@ -3095,11 +3239,16 @@ zfs_create(libzfs_handle_t *hdl, const char *path, zfs_type_t type,
 		}
 	}
 
+    /* zfs_crypto_create may update props */
+    if (zfs_crypto_zckey(hdl, ZFS_CRYPTO_CREATE, props, &zc, type) != 0)
+        return (-1);
+
 	if (props && zcmd_write_src_nvlist(hdl, &zc, props) != 0)
 		return (-1);
 	nvlist_free(props);
 
 	/* create the dataset */
+    // THIS FAILS.
 	ret = zfs_ioctl(hdl, ZFS_IOC_CREATE, &zc);
 
 	zcmd_free_nvlists(&zc);
@@ -3134,6 +3283,12 @@ zfs_create(libzfs_handle_t *hdl, const char *path, zfs_type_t type,
 			    "pool must be upgraded to set this "
 			    "property or value"));
 			return (zfs_error(hdl, EZFS_BADVERSION, errbuf));
+
+        case ENOKEY:
+            zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+                                        "encryption key not available"));
+            return (zfs_error(hdl, EZFS_KEYERR, errbuf));
+
 #ifdef _ILP32
 		case EOVERFLOW:
 			/*
@@ -3324,6 +3479,18 @@ zfs_clone(zfs_handle_t *zhp, const char *target, nvlist_t *props)
 
 	(void) strlcpy(zc.zc_name, target, sizeof (zc.zc_name));
 	(void) strlcpy(zc.zc_value, zhp->zfs_name, sizeof (zc.zc_value));
+
+    /* may update props */
+    if (zfs_crypto_zckey(zhp->zfs_hdl, ZFS_CRYPTO_CLONE, props, &zc, type) != 0) {
+        nvlist_free(props);
+        return (-1);
+    }
+
+    if (props && zcmd_write_src_nvlist(hdl, &zc, props) != 0) {
+        nvlist_free(props);
+        return (-1);
+    }
+
 	ret = zfs_ioctl(zhp->zfs_hdl, ZFS_IOC_CREATE, &zc);
 
 	zcmd_free_nvlists(&zc);
@@ -3462,6 +3629,7 @@ zfs_snapshot(libzfs_handle_t *hdl, const char *path, boolean_t recursive,
 		zc.zc_objset_type = DMU_OST_ZVOL;
 	else
 		zc.zc_objset_type = DMU_OST_ZFS;
+
 	zc.zc_cookie = recursive;
 	ret = zfs_ioctl(zhp->zfs_hdl, ZFS_IOC_SNAPSHOT, &zc);
 
@@ -3630,8 +3798,7 @@ zfs_rollback(zfs_handle_t *zhp, zfs_handle_t *snap, boolean_t force)
  * Renames the given dataset.
  */
 int
-zfs_rename(zfs_handle_t *zhp, const char *source, const char *target,
-    renameflags_t flags)
+zfs_rename(zfs_handle_t *zhp, const char *target, renameflags_t flags)
 {
 	int ret;
 	zfs_cmd_t zc = { 0 };
@@ -3650,18 +3817,6 @@ zfs_rename(zfs_handle_t *zhp, const char *source, const char *target,
 
 	(void) snprintf(errbuf, sizeof (errbuf), dgettext(TEXT_DOMAIN,
 	    "cannot rename to '%s'"), target);
-
-	if (source != NULL) {
-		/*
-		 * This is recursive snapshots rename, put snapshot name
-		 * (that might not exist) into zfs_name.
-		 */
-		assert(flags.recurse);
-
-		(void) strlcat(zhp->zfs_name, "@", sizeof(zhp->zfs_name));
-		(void) strlcat(zhp->zfs_name, source, sizeof(zhp->zfs_name));
-		zhp->zfs_type = ZFS_TYPE_SNAPSHOT;
-	}
 
 	/*
 	 * Make sure the target name is valid
@@ -3794,6 +3949,11 @@ zfs_rename(zfs_handle_t *zhp, const char *source, const char *target,
 
 	(void) strlcpy(zc.zc_name, zhp->zfs_name, sizeof (zc.zc_name));
 	(void) strlcpy(zc.zc_value, target, sizeof (zc.zc_value));
+
+    if ((ret = zfs_crypto_rename_check(zhp, &zc)) != 0) {
+        (void) zfs_error(zhp->zfs_hdl, EZFS_KEYERR, errbuf);
+        goto error;
+    }
 
 	zc.zc_cookie = flags.recurse ? 1 : 0;
 	if (flags.nounmount)

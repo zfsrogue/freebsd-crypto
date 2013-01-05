@@ -78,6 +78,7 @@ enum zio_checksum {
 	ZIO_CHECKSUM_FLETCHER_4,
 	ZIO_CHECKSUM_SHA256,
 	ZIO_CHECKSUM_ZILOG2,
+    ZIO_CHECKSUM_SHA256_MAC,
 	ZIO_CHECKSUM_FUNCTIONS
 };
 
@@ -221,6 +222,8 @@ enum zio_wait_type {
 	ZIO_WAIT_TYPES
 };
 
+#define BOOTFS_CRYPT_VALID(crypt)       (((crypt)) == ZIO_CRYPT_OFF)
+
 /*
  * We'll take the number 122 and 123 to indicate checksum errors and
  * fragmentation. Those doesn't collide with any errno values as they
@@ -230,6 +233,23 @@ enum zio_wait_type {
 #define	EFRAGS	123
 
 typedef void zio_done_func_t(zio_t *zio);
+enum zio_crypt {
+        ZIO_CRYPT_INHERIT = 0,
+        ZIO_CRYPT_ON,
+        ZIO_CRYPT_OFF,
+        ZIO_CRYPT_AES_128_CCM,
+        ZIO_CRYPT_AES_192_CCM,
+        ZIO_CRYPT_AES_256_CCM,
+        ZIO_CRYPT_AES_128_GCM,
+        ZIO_CRYPT_AES_192_GCM,
+        ZIO_CRYPT_AES_256_GCM,
+        ZIO_CRYPT_AES_128_CTR,  /* preallocated ZVOLs only */
+        ZIO_CRYPT_FUNCTIONS
+};
+
+#define ZIO_CRYPT_ON_VALUE      ZIO_CRYPT_AES_128_CCM
+#define ZIO_CRYPT_DEFAULT       ZIO_CRYPT_OFF
+
 
 extern uint8_t zio_priority_table[ZIO_PRIORITY_TABLE_SIZE];
 extern char *zio_type_name[ZIO_TYPES];
@@ -286,6 +306,7 @@ typedef struct zbookmark {
 typedef struct zio_prop {
 	enum zio_checksum	zp_checksum;
 	enum zio_compress	zp_compress;
+    enum zio_crypt          zp_crypt;
 	dmu_object_type_t	zp_type;
 	uint8_t			zp_level;
 	uint8_t			zp_copies;
@@ -302,6 +323,11 @@ typedef void zio_cksum_free_f(void *cbdata, size_t size);
 
 struct zio_bad_cksum;				/* defined in zio_checksum.h */
 struct dnode_phys;
+
+    // Pick a better error code
+#define ENOKEY  EPROTO
+
+
 
 struct zio_cksum_report {
 	struct zio_cksum_report *zcr_next;
@@ -336,13 +362,15 @@ typedef struct zio_gang_node {
 typedef zio_t *zio_gang_issue_func_t(zio_t *zio, blkptr_t *bp,
     zio_gang_node_t *gn, void *data);
 
-typedef void zio_transform_func_t(zio_t *zio, void *data, uint64_t size);
+typedef void zio_transform_func_t(zio_t *zio,
+     void *data, uint64_t size, void *arg);
 
 typedef struct zio_transform {
 	void			*zt_orig_data;
 	uint64_t		zt_orig_size;
 	uint64_t		zt_bufsize;
 	zio_transform_func_t	*zt_transform;
+        void                    *zt_transform_arg;
 	struct zio_transform	*zt_next;
 } zio_transform_t;
 
@@ -425,6 +453,7 @@ struct zio {
 	void		*io_private;
 	int64_t		io_prev_space_delta;	/* DMU private */
 	blkptr_t	io_bp_orig;
+    enum zio_crypt          zp_crypt;
 
 	/* Data represented by this I/O */
 	void		*io_data;
@@ -491,7 +520,7 @@ extern zio_t *zio_write(zio_t *pio, spa_t *spa, uint64_t txg, blkptr_t *bp,
     int priority, enum zio_flag flags, const zbookmark_t *zb);
 
 extern zio_t *zio_rewrite(zio_t *pio, spa_t *spa, uint64_t txg, blkptr_t *bp,
-    void *data, uint64_t size, zio_done_func_t *done, void *priv,
+    void *data, uint64_t size, zio_prop_t *zp, zio_done_func_t *done, void *priv,
     int priority, enum zio_flag flags, zbookmark_t *zb);
 
 extern void zio_write_override(zio_t *zio, blkptr_t *bp, int copies,
@@ -521,7 +550,7 @@ extern zio_t *zio_free_sync(zio_t *pio, spa_t *spa, uint64_t txg,
     const blkptr_t *bp, uint64_t size, enum zio_flag flags);
 
 extern int zio_alloc_zil(spa_t *spa, uint64_t txg, blkptr_t *new_bp,
-    blkptr_t *old_bp, uint64_t size, boolean_t use_slog);
+    blkptr_t *old_bp, uint64_t size, boolean_t use_slog, int crypt);
 extern void zio_free_zil(spa_t *spa, uint64_t txg, blkptr_t *bp);
 extern void zio_flush(zio_t *zio, vdev_t *vd);
 extern zio_t *zio_trim(zio_t *zio, spa_t *spa, vdev_t *vd, uint64_t offset,
@@ -566,6 +595,8 @@ extern enum zio_checksum zio_checksum_dedup_select(spa_t *spa,
     enum zio_checksum child, enum zio_checksum parent);
 extern enum zio_compress zio_compress_select(enum zio_compress child,
     enum zio_compress parent);
+extern enum zio_crypt  zio_crypt_select(enum zio_crypt child,
+    enum zio_crypt parent);
 
 extern void zio_suspend(spa_t *spa, zio_t *zio);
 extern int zio_resume(spa_t *spa);

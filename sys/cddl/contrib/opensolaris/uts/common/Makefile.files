@@ -46,6 +46,7 @@ ZFS_COMMON_OBJS +=		\
 	dnode.o			\
 	dnode_sync.o		\
 	dsl_dir.o		\
+	dsl_crypto.o		\
 	dsl_dataset.o		\
 	dsl_deadlist.o		\
 	dsl_pool.o		\
@@ -82,6 +83,7 @@ ZFS_COMMON_OBJS +=		\
 	zap.o			\
 	zap_leaf.o		\
 	zap_micro.o		\
+	zcrypt.o		\
 	zfs_byteswap.o		\
 	zfs_debug.o		\
 	zfs_fm.o		\
@@ -91,6 +93,7 @@ ZFS_COMMON_OBJS +=		\
 	zil.o			\
 	zio.o			\
 	zio_checksum.o		\
+	zio_crypt.o		\
 	zio_compress.o		\
 	zio_inject.o		\
 	zle.o			\
@@ -121,6 +124,7 @@ ZFS_OBJS +=			\
 	rrwlock.o		\
 	zfs_vfsops.o		\
 	zfs_vnops.o		\
+	zcrypt_common.o         \
 	zvol.o
 
 ZUT_OBJS +=			\

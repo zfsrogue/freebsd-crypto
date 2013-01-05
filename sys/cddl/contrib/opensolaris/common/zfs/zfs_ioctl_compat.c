@@ -34,6 +34,7 @@
 #include <sys/nvpair.h>
 #include <sys/dsl_deleg.h>
 #include <sys/zfs_ioctl.h>
+#include <sys/dsl_dataset.h>
 #include "zfs_namecheck.h"
 #include "zfs_ioctl_compat.h"
 

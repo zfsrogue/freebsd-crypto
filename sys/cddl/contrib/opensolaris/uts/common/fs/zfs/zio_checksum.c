@@ -31,6 +31,8 @@
 #include <sys/zil.h>
 #include <zfs_fletcher.h>
 
+unsigned int zfs_crypto_ignore_checksum_errors = 0; /* Disable crypto checksum checks */
+
 /*
  * Checksum vectors.
  *
@@ -69,17 +71,18 @@ zio_checksum_off(const void *buf, uint64_t size, zio_cksum_t *zcp)
 }
 
 zio_checksum_info_t zio_checksum_table[ZIO_CHECKSUM_FUNCTIONS] = {
-	{{NULL,			NULL},			0, 0, 0, "inherit"},
-	{{NULL,			NULL},			0, 0, 0, "on"},
-	{{zio_checksum_off,	zio_checksum_off},	0, 0, 0, "off"},
-	{{zio_checksum_SHA256,	zio_checksum_SHA256},	1, 1, 0, "label"},
-	{{zio_checksum_SHA256,	zio_checksum_SHA256},	1, 1, 0, "gang_header"},
-	{{fletcher_2_native,	fletcher_2_byteswap},	0, 1, 0, "zilog"},
-	{{fletcher_2_native,	fletcher_2_byteswap},	0, 0, 0, "fletcher2"},
-	{{fletcher_4_native,	fletcher_4_byteswap},	1, 0, 0, "fletcher4"},
-	{{zio_checksum_SHA256,	zio_checksum_SHA256},	1, 0, 1, "sha256"},
-	{{fletcher_4_native,	fletcher_4_byteswap},	0, 1, 0, "zilog2"},
-	{{zio_checksum_off,	zio_checksum_off},	0, 0, 0, "noparity"},
+	{{NULL,			NULL},			0, 0, 0, 0, "inherit"},
+	{{NULL,			NULL},			0, 0, 0, 0, "on"},
+	{{zio_checksum_off,	zio_checksum_off},	0, 0, 0, 0, "off"},
+	{{zio_checksum_SHA256,	zio_checksum_SHA256},	1, 1, 0, 0, "label"},
+	{{zio_checksum_SHA256,	zio_checksum_SHA256},	1, 1, 0, 0, "gang_header"},
+	{{fletcher_2_native,	fletcher_2_byteswap},	0, 1, 0, 0, "zilog"},
+	{{fletcher_2_native,	fletcher_2_byteswap},	0, 0, 0, 0, "fletcher2"},
+	{{fletcher_4_native,	fletcher_4_byteswap},	1, 0, 0, 0, "fletcher4"},
+	{{zio_checksum_SHA256,	zio_checksum_SHA256},	1, 0, 1, 0, "sha256"},
+	{{fletcher_4_native,	fletcher_4_byteswap},	0, 1, 0, 0, "zilog2"},
+	{{zio_checksum_off,	zio_checksum_off},	0, 0, 0, 0, "noparity"},
+    {{zio_checksum_SHAMAC,  zio_checksum_SHAMAC},   1, 0, 1, 1, "sha256-mac"},
 };
 
 enum zio_checksum
@@ -263,8 +266,31 @@ zio_checksum_error(zio_t *zio, zio_bad_cksum_t *info)
 	info->zbc_injected = 0;
 	info->zbc_has_cksum = 1;
 
-	if (!ZIO_CHECKSUM_EQUAL(actual_cksum, expected_cksum))
-		return (SET_ERROR(ECKSUM));
+	/*
+	 * Special case for truncated checksums with crypto MAC
+	 * This may not be the best place to deal with this but it is here now.
+	 *
+	 * Words 0 and 1 and 32 bits of word 2 of the checksum are the
+	 * first 160 bytes of SHA256 hash.
+	 * The rest of words 2 and all of word 3 are the crypto MAC so
+	 * ignore those because we can't check them until we do the decryption
+	 * later, nor could we do them if the key wasn't present
+	 *
+	 * If module param 'zfs_crypto_ignore_checksum_errors' is set, ignore
+	 * any checksum errors.
+	 */
+	if (ci->ci_trunc) {
+		if (!zfs_crypto_ignore_checksum_errors && !(0 == (
+														(actual_cksum.zc_word[0] - expected_cksum.zc_word[0]) |
+														(actual_cksum.zc_word[1] - expected_cksum.zc_word[1]) |
+														(BF64_GET(actual_cksum.zc_word[2], 0, 32) -
+														 BF64_GET(expected_cksum.zc_word[2], 0, 32))))) {
+            return (ECKSUM);
+		}
+	} else if (!zfs_crypto_ignore_checksum_errors &&
+			   !ZIO_CHECKSUM_EQUAL(actual_cksum, expected_cksum)) {
+		return (ECKSUM);
+	}
 
 	if (zio_injection_enabled && !zio->io_error &&
 	    (error = zio_handle_fault_injection(zio, ECKSUM)) != 0) {

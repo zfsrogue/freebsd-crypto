@@ -59,10 +59,28 @@ typedef struct dsl_prop_cb_record {
 typedef struct dsl_props_arg {
 	nvlist_t *pa_props;
 	zprop_source_t pa_source;
+    //zprop_setflags_t pa_flags;
+    //zone_t *pa_zone; //FIXME
 } dsl_props_arg_t;
 
 void dsl_prop_init(dsl_dir_t *dd);
 void dsl_prop_fini(dsl_dir_t *dd);
+
+typedef struct dsl_prop_set_arg {
+	const char *psa_name;
+	zprop_source_t psa_source;
+	int psa_intsz;
+	int psa_numints;
+	const void *psa_value;
+    //zprop_setflags_t psa_flags;
+    //zone_t *psa_zone; // FIXME
+	/*
+	 * Used to handle the special requirements of the quota and reservation
+	 * properties.
+	 */
+	uint64_t psa_effective_value;
+} dsl_prop_setarg_t;
+
 int dsl_prop_register(struct dsl_dataset *ds, const char *propname,
     dsl_prop_changed_cb_t *callback, void *cbarg);
 void dsl_prop_unregister_all(struct dsl_dataset *ds, void *cbarg);

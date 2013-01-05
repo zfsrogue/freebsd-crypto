@@ -9,7 +9,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY AUTHOR AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -35,12 +35,27 @@
 #include <sys/kernel.h>
 #include <sys/misc.h>
 #include <sys/module.h>
-#include <sys/mutex.h>
+
+#include <sys/socket.h>
+
+#include <sys/_rwlock.h>
+
+#include <sys/lock.h>
+#include <sys/rwlock.h>
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/mbuf.h>
+#include <net/if.h>
+#include <net/if_dl.h>
+#include <net/if_media.h>
+#include <net/if_types.h>
+#include <net/ethernet.h>
 
 cpu_core_t	cpu_core[MAXCPU];
 kmutex_t	cpu_lock;
 solaris_cpu_t	solaris_cpu[MAXCPU];
 int		nsec_per_tick;
+
 
 /*
  *  OpenSolaris subsystem initialisation.
@@ -63,6 +78,7 @@ opensolaris_load(void *dummy)
 	mutex_init(&cpu_lock, "OpenSolaris CPU lock", MUTEX_DEFAULT, NULL);
 
 	nsec_per_tick = NANOSEC / hz;
+
 }
 
 SYSINIT(opensolaris_register, SI_SUB_OPENSOLARIS, SI_ORDER_FIRST, opensolaris_load, NULL);

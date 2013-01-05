@@ -222,6 +222,17 @@ typedef struct zio_cksum {
  * log. birth	transaction group in which the block was logically born
  * fill count	number of non-zero blocks under this bp
  * checksum[4]	256-bit checksum of the data this bp describes
+ *
+ * Special notes for encryption:
+ *
+ * A single bit is used to indicate if the block is encrypted.  This is
+ * sufficient since all blocks in a dataset always share the same encryption
+ * algorithm-keylen-mode.
+ *
+ * When encryption is enabled blk_dva[2] holds the IV.
+ * When encryption is enabled level 0 blocks checksum[2] and checksum[3] hold
+ * the MAC output from the encryption and the normal checksum is truncated
+ * and stored in checksum[0] and checksum[1].
  */
 
 /*
@@ -401,6 +412,10 @@ _NOTE(CONSTCOND) } while (0)
 #define	BP_GET_LEVEL(bp)		BF64_GET((bp)->blk_prop, 56, 5)
 #define	BP_SET_LEVEL(bp, x)		BF64_SET((bp)->blk_prop, 56, 5, x)
 
+#define BP_GET_CRYPT(bp)                BF64_GET((bp)->blk_prop, 61, 1)
+#define BP_SET_CRYPT(bp, x)             BF64_SET((bp)->blk_prop, 61, 1, x)
+#define BP_IS_ENCRYPTED(bp)             (!!BP_GET_CRYPT(bp))
+
 #define	BP_GET_DEDUP(bp)		BF64_GET((bp)->blk_prop, 62, 1)
 #define	BP_SET_DEDUP(bp, x)		BF64_SET((bp)->blk_prop, 62, 1, x)
 
@@ -424,7 +439,7 @@ _NOTE(CONSTCOND) } while (0)
 	(BP_IS_EMBEDDED(bp) ? 0 : \
 	DVA_GET_ASIZE(&(bp)->blk_dva[0]) + \
 	DVA_GET_ASIZE(&(bp)->blk_dva[1]) + \
-	DVA_GET_ASIZE(&(bp)->blk_dva[2]))
+	 (BP_IS_ENCRYPTED(bp) ? 0 : DVA_GET_ASIZE(&(bp)->blk_dva[2])))
 
 #define	BP_GET_UCSIZE(bp) \
 	((BP_GET_LEVEL(bp) > 0 || DMU_OT_IS_METADATA(BP_GET_TYPE(bp))) ? \
@@ -434,13 +449,18 @@ _NOTE(CONSTCOND) } while (0)
 	(BP_IS_EMBEDDED(bp) ? 0 : \
 	!!DVA_GET_ASIZE(&(bp)->blk_dva[0]) + \
 	!!DVA_GET_ASIZE(&(bp)->blk_dva[1]) + \
-	!!DVA_GET_ASIZE(&(bp)->blk_dva[2]))
+	 (BP_IS_ENCRYPTED(bp) ? 0 : DVA_IS_VALID(&(bp)->blk_dva[2])))
+
+#define BP_GET_COPIES(bp)                       \
+        (DVA_VALID_COPIES(&(bp)->blk_dva[0]) +  \
+        DVA_VALID_COPIES(&(bp)->blk_dva[1]) +   \
+		 (BP_IS_ENCRYPTED(bp) ? 0 : DVA_VALID_COPIES(&(bp)->blk_dva[2])))
 
 #define	BP_COUNT_GANG(bp)	\
 	(BP_IS_EMBEDDED(bp) ? 0 : \
 	(DVA_GET_GANG(&(bp)->blk_dva[0]) + \
 	DVA_GET_GANG(&(bp)->blk_dva[1]) + \
-	DVA_GET_GANG(&(bp)->blk_dva[2])))
+	 (BP_IS_ENCRYPTED(bp) ? 0 : DVA_GET_GANG(&(bp)->blk_dva[2]))))
 
 #define	DVA_EQUAL(dva1, dva2)	\
 	((dva1)->dva_word[1] == (dva2)->dva_word[1] && \
@@ -473,6 +493,43 @@ _NOTE(CONSTCOND) } while (0)
 
 
 #define	DVA_IS_VALID(dva)	(DVA_GET_ASIZE(dva) != 0)
+
+/*
+ * The Crypto IV lives in blk_dva[2].
+ * Leave 0-31 alone to ensure that ASIZE is always 0 even when we
+ * have an IV in there.  The IV is then in dva_word[0] 32-64 and dva_word[1]
+ */
+#define BP_SET_CRYPT_IV(bp, iv)                                         \
+{                                                                       \
+        BF64_SET((bp)->blk_dva[2].dva_word[0], 0, 31, 0);               \
+        BF64_SET((bp)->blk_dva[2].dva_word[0], 32, 32, BE_32((iv)[0])); \
+        BF64_SET((bp)->blk_dva[2].dva_word[1],  0, 32, BE_32((iv)[1])); \
+        BF64_SET((bp)->blk_dva[2].dva_word[1], 32, 32, BE_32((iv)[2])); \
+}
+
+#define BP_GET_CRYPT_IV(bp, iv)                                         \
+{                                                                       \
+        ASSERT(DVA_GET_ASIZE(&(bp)->blk_dva[2]) == 0);                  \
+        iv[0] = BE_32(BF64_GET((bp)->blk_dva[2].dva_word[0], 32, 32));  \
+        iv[1] = BE_32(BF64_GET((bp)->blk_dva[2].dva_word[1],  0, 32));  \
+        iv[2] = BE_32(BF64_GET((bp)->blk_dva[2].dva_word[1], 32, 32));  \
+        ASSERT(DVA_GET_ASIZE(&(bp)->blk_dva[2]) == 0);                  \
+}
+
+#define BP_SET_CRYPT_MAC(bp, mac)                                       \
+{                                                                       \
+        BF64_SET((bp)->blk_cksum.zc_word[2], 32, 32, BE_32(mac[0]));    \
+        BF64_SET((bp)->blk_cksum.zc_word[3],  0, 32, BE_32(mac[1]));    \
+        BF64_SET((bp)->blk_cksum.zc_word[3], 32, 32, BE_32(mac[2]));    \
+}
+
+#define BP_GET_CRYPT_MAC(bp, mac)               \
+{                                               \
+        mac[0] = BE_32(BF64_GET((bp)->blk_cksum.zc_word[2], 32, 32));   \
+        mac[1] = BE_32(BF64_GET((bp)->blk_cksum.zc_word[3],  0, 32));   \
+        mac[2] = BE_32(BF64_GET((bp)->blk_cksum.zc_word[3], 32, 32));   \
+}
+
 
 #define	ZIO_SET_CHECKSUM(zcp, w0, w1, w2, w3)	\
 {						\
@@ -571,7 +628,7 @@ _NOTE(CONSTCOND) } while (0)
 		    DVA_GET_ASIZE(&bp->blk_dva[1]) / 2)			\
 			copies--;					\
 		len += func(buf + len, size - len,			\
-		    "[L%llu %s] %s %s %s %s %s %s%c"			\
+		    "[L%llu %s] %s %s %s %s %s %s %s%c"			\
 		    "size=%llxL/%llxP birth=%lluL/%lluP fill=%llu%c"	\
 		    "cksum=%llx:%llx:%llx:%llx",			\
 		    (u_longlong_t)BP_GET_LEVEL(bp),			\
@@ -581,6 +638,7 @@ _NOTE(CONSTCOND) } while (0)
 		    BP_GET_BYTEORDER(bp) == 0 ? "BE" : "LE",		\
 		    BP_IS_GANG(bp) ? "gang" : "contiguous",		\
 		    BP_GET_DEDUP(bp) ? "dedup" : "unique",		\
+            BP_GET_CRYPT(bp) ? "encrypted" : "unencrypted",     \
 		    copyname[copies],					\
 		    ws,							\
 		    (u_longlong_t)BP_GET_LSIZE(bp),			\
@@ -615,7 +673,7 @@ extern int spa_open_rewind(const char *pool, spa_t **, void *tag,
 extern int spa_get_stats(const char *pool, nvlist_t **config, char *altroot,
     size_t buflen);
 extern int spa_create(const char *pool, nvlist_t *config, nvlist_t *props,
-    nvlist_t *zplprops);
+		      struct dsl_crypto_ctx *dcc, nvlist_t *zplprops);
 #ifdef illumos
 extern int spa_import_rootpool(char *devpath, char *devid);
 #else

@@ -71,7 +71,8 @@ typedef struct dmu_recv_cookie {
 } dmu_recv_cookie_t;
 
 int dmu_recv_begin(char *tofs, char *tosnap, struct drr_begin *drrb,
-    boolean_t force, char *origin, dmu_recv_cookie_t *drc);
+    boolean_t force, char *origin, dmu_recv_cookie_t *drc,
+	struct dsl_crypto_ctx *dcc);
 #ifdef illumos
 int dmu_recv_stream(dmu_recv_cookie_t *drc, struct vnode *vp, offset_t *voffp,
 #else

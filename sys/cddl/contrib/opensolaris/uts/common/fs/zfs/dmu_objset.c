@@ -34,6 +34,7 @@
 #include <sys/zfs_context.h>
 #include <sys/dmu_objset.h>
 #include <sys/dsl_dir.h>
+#include <sys/dsl_crypto.h>
 #include <sys/dsl_dataset.h>
 #include <sys/dsl_prop.h>
 #include <sys/dsl_pool.h>
@@ -43,6 +44,7 @@
 #include <sys/dbuf.h>
 #include <sys/zvol.h>
 #include <sys/dmu_tx.h>
+#include <sys/zio_crypt.h>
 #include <sys/zap.h>
 #include <sys/zil.h>
 #include <sys/dmu_impl.h>
@@ -51,6 +53,8 @@
 #include <sys/zfs_onexit.h>
 #include <sys/dsl_destroy.h>
 #include <sys/vdev.h>
+#include <sys/zcrypt.h>
+#include <sys/zfeature.h>
 
 /*
  * Needed to close a window in dnode_move() that allows the objset to be freed
@@ -278,6 +282,18 @@ recordsize_changed_cb(void *arg, uint64_t newval)
 	os->os_recordsize = newval;
 }
 
+static void crypt_changed_cb(void *arg, uint64_t newval)
+{
+    objset_t *os = arg;
+
+    /*
+     * Inheritance and range checking should have been done by now.
+     */
+    ASSERT(newval != ZIO_CRYPT_INHERIT);
+
+    os->os_crypt = zio_crypt_select(newval, ZIO_CRYPT_ON_VALUE);
+}
+
 void
 dmu_objset_byteswap(void *buf, size_t size)
 {
@@ -299,7 +315,7 @@ dmu_objset_open_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
     objset_t **osp)
 {
 	objset_t *os;
-	int i, err;
+	int i, err = 0;
 
 	ASSERT(ds == NULL || MUTEX_HELD(&ds->ds_opening_lock));
 
@@ -359,7 +375,10 @@ dmu_objset_open_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 	 * Note: the changed_cb will be called once before the register
 	 * func returns, thus changing the checksum/compression from the
 	 * default (fletcher2/off).  Snapshots don't need to know about
-	 * checksum/compression/copies.
+	 * checksum/compression/copies.  But they do need to know about
+	 * encryption so that clones from the snaphost inherit the
+	 * same encryption property regardless of where in the namespace
+	 * they get created.
 	 */
 	if (ds != NULL) {
 		err = dsl_prop_register(ds,
@@ -370,6 +389,11 @@ dmu_objset_open_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 			    zfs_prop_to_name(ZFS_PROP_SECONDARYCACHE),
 			    secondary_cache_changed_cb, os);
 		}
+
+		if (err == 0)
+		  err = dsl_prop_register(ds, "encryption",
+					  crypt_changed_cb, os);
+
 		if (!ds->ds_is_snapshot) {
 			if (err == 0) {
 				err = dsl_prop_register(ds,
@@ -420,7 +444,11 @@ dmu_objset_open_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 			return (err);
 		}
 	} else {
-		/* It's the meta-objset. */
+        /*
+         * It's the meta-objset.
+         * Encryption is off for ZFS metadata but on for ZPL metadata
+         * and file/zvol contents.
+         */
 		os->os_checksum = ZIO_CHECKSUM_FLETCHER_4;
 		os->os_compress = ZIO_COMPRESS_ON;
 		os->os_copies = spa_max_replication(spa);
@@ -430,6 +458,7 @@ dmu_objset_open_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 		os->os_sync = ZFS_SYNC_STANDARD;
 		os->os_primary_cache = ZFS_CACHE_ALL;
 		os->os_secondary_cache = ZFS_CACHE_ALL;
+        os->os_crypt = ZIO_CRYPT_OFF;
 	}
 
 	if (ds == NULL || !ds->ds_is_snapshot)
@@ -461,6 +490,7 @@ dmu_objset_open_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 	}
 
 	*osp = os;
+
 	return (0);
 }
 
@@ -487,10 +517,27 @@ dmu_objset_from_ds(dsl_dataset_t *ds, objset_t **osp)
 	return (err);
 }
 
-/*
- * Holds the pool while the objset is held.  Therefore only one objset
- * can be held at a time.
- */
+int
+dmu_objset_from_ds_NEW(dsl_dataset_t *ds, objset_t **osp)
+{
+    mutex_enter(&ds->ds_opening_lock);
+    if (ds->ds_objset == NULL) {
+        int err = dmu_objset_open_impl(dsl_dataset_get_spa(ds),
+                                       ds, dsl_dataset_get_blkptr(ds), osp);
+        if (err) {
+            mutex_exit(&ds->ds_opening_lock);
+            return (err);
+        }
+        ASSERT(ds->ds_objset == *osp);
+    }
+    *osp = ds->ds_objset;
+    mutex_exit(&ds->ds_opening_lock);
+    return (0);
+}
+
+
+/* called from zpl */
+
 int
 dmu_objset_hold(const char *name, void *tag, objset_t **osp)
 {
@@ -735,10 +782,30 @@ dmu_objset_snap_cmtime(objset_t *os)
 	return (dsl_dir_snap_cmtime(os->os_dsl_dataset->ds_dir));
 }
 
+static void
+dmu_objset_dirty(objset_t *os)
+{
+    // FIXME
+#if 1
+    //arc_make_writable(os->os_phys_buf);
+
+    if (os->os_phys_buf->b_data != os->os_phys) {
+        os->os_phys = os->os_phys_buf->b_data;
+        DMU_META_DNODE(os)->dn_phys = &os->os_phys->os_meta_dnode;
+        if (DMU_USERUSED_DNODE(os)) {
+            DMU_USERUSED_DNODE(os)->dn_phys =
+                &os->os_phys->os_userused_dnode;
+            DMU_GROUPUSED_DNODE(os)->dn_phys =
+                &os->os_phys->os_groupused_dnode;
+        }
+    }
+#endif
+}
+
 /* called from dsl for meta-objset */
 objset_t *
 dmu_objset_create_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
-    dmu_objset_type_t type, dmu_tx_t *tx)
+                       dmu_objset_type_t type, dsl_crypto_ctx_t *dcc, dmu_tx_t *tx)
 {
 	objset_t *os;
 	dnode_t *mdn;
@@ -785,10 +852,23 @@ dmu_objset_create_impl(spa_t *spa, dsl_dataset_t *ds, blkptr_t *bp,
 	ASSERT(type != DMU_OST_NONE);
 	ASSERT(type != DMU_OST_ANY);
 	ASSERT(type < DMU_OST_NUMTYPES);
+    /*
+     * Note: although we should not be dirtying the objset outside of
+     * sync context, the os_type is used directly from the os_phys
+     * in dsl_scan so it may not be save to put os_type in the in-core
+     * objset_t and set it in the phys in sync context (as with os_flags)
+     */
+    dmu_objset_dirty(os);
 	os->os_phys->os_type = type;
 	if (dmu_objset_userused_enabled(os)) {
 		os->os_phys->os_flags |= OBJSET_FLAG_USERACCOUNTING_COMPLETE;
-		os->os_flags = os->os_phys->os_flags;
+        // FIXME - removed in newer.
+		// os->os_flags = os->os_phys->os_flags;
+	}
+
+    if (dcc != NULL && dcc->dcc_crypt != ZIO_CRYPT_INHERIT) {
+        os->os_crypt = zio_crypt_select(dcc->dcc_crypt,
+                                        ZIO_CRYPT_ON_VALUE);
 	}
 
 	dsl_dataset_dirty(ds, tx);
@@ -804,6 +884,7 @@ typedef struct dmu_objset_create_arg {
 	void *doca_userarg;
 	dmu_objset_type_t doca_type;
 	uint64_t doca_flags;
+    dsl_crypto_ctx_t *doca_crypto_ctx;
 } dmu_objset_create_arg_t;
 
 /*ARGSUSED*/
@@ -815,9 +896,13 @@ dmu_objset_create_check(void *arg, dmu_tx_t *tx)
 	dsl_dir_t *pdd;
 	const char *tail;
 	int error;
+	zfs_crypt_key_status_t keystatus = 0;
 
 	if (strchr(doca->doca_name, '@') != NULL)
 		return (SET_ERROR(EINVAL));
+
+	dsl_dataset_keystatus_byname(dp, doca->doca_name, &keystatus);
+    if (keystatus == ZFS_CRYPT_KEY_UNAVAILABLE) return (ENOKEY);
 
 	error = dsl_dir_hold(dp, doca->doca_name, FTAG, &pdd, &tail);
 	if (error != 0)
@@ -829,6 +914,15 @@ dmu_objset_create_check(void *arg, dmu_tx_t *tx)
 	error = dsl_fs_ss_limit_check(pdd, 1, ZFS_PROP_FILESYSTEM_LIMIT, NULL,
 	    doca->doca_cred);
 	dsl_dir_rele(pdd, FTAG);
+
+	/*
+     * Check we have the required crypto algorithms available
+     * via kcf since this is our last chance to fail the dataset creation.
+     */
+    if (doca->doca_crypto_ctx != NULL &&
+        !zcrypt_mech_available(doca->doca_crypto_ctx->dcc_crypt)) {
+        return (ENOTSUP);
+    }
 
 	return (error);
 }
@@ -847,13 +941,13 @@ dmu_objset_create_sync(void *arg, dmu_tx_t *tx)
 
 	VERIFY0(dsl_dir_hold(dp, doca->doca_name, FTAG, &pdd, &tail));
 
-	obj = dsl_dataset_create_sync(pdd, tail, NULL, doca->doca_flags,
+	obj = dsl_dataset_create_sync(pdd, tail, NULL, doca->doca_crypto_ctx, doca->doca_flags,
 	    doca->doca_cred, tx);
 
 	VERIFY0(dsl_dataset_hold_obj(pdd->dd_pool, obj, FTAG, &ds));
 	bp = dsl_dataset_get_blkptr(ds);
 	os = dmu_objset_create_impl(pdd->dd_pool->dp_spa,
-	    ds, bp, doca->doca_type, tx);
+	    ds, bp, doca->doca_type, doca->doca_crypto_ctx, tx);
 
 	if (doca->doca_userfunc != NULL) {
 		doca->doca_userfunc(os, doca->doca_userarg,
@@ -867,6 +961,7 @@ dmu_objset_create_sync(void *arg, dmu_tx_t *tx)
 
 int
 dmu_objset_create(const char *name, dmu_objset_type_t type, uint64_t flags,
+                  struct dsl_crypto_ctx *crypto_ctx,
     void (*func)(objset_t *os, void *arg, cred_t *cr, dmu_tx_t *tx), void *arg)
 {
 	dmu_objset_create_arg_t doca;
@@ -876,6 +971,7 @@ dmu_objset_create(const char *name, dmu_objset_type_t type, uint64_t flags,
 	doca.doca_flags = flags;
 	doca.doca_userfunc = func;
 	doca.doca_userarg = arg;
+	doca.doca_crypto_ctx = crypto_ctx;
 	doca.doca_type = type;
 
 	return (dsl_sync_task(name,
@@ -887,6 +983,7 @@ typedef struct dmu_objset_clone_arg {
 	const char *doca_clone;
 	const char *doca_origin;
 	cred_t *doca_cred;
+	struct dsl_crypto_ctx *doca_crypto_ctx;
 } dmu_objset_clone_arg_t;
 
 /*ARGSUSED*/
@@ -947,8 +1044,8 @@ dmu_objset_clone_sync(void *arg, dmu_tx_t *tx)
 	VERIFY0(dsl_dir_hold(dp, doca->doca_clone, FTAG, &pdd, &tail));
 	VERIFY0(dsl_dataset_hold(dp, doca->doca_origin, FTAG, &origin));
 
-	obj = dsl_dataset_create_sync(pdd, tail, origin, 0,
-	    doca->doca_cred, tx);
+	obj = dsl_dataset_create_sync(pdd, tail, origin, doca->doca_crypto_ctx,
+	    0, doca->doca_cred, tx);
 
 	VERIFY0(dsl_dataset_hold_obj(pdd->dd_pool, obj, FTAG, &ds));
 	dsl_dataset_name(origin, namebuf);
@@ -960,12 +1057,14 @@ dmu_objset_clone_sync(void *arg, dmu_tx_t *tx)
 }
 
 int
-dmu_objset_clone(const char *clone, const char *origin)
+dmu_objset_clone(const char *clone, const char *origin,
+	struct dsl_crypto_ctx *crypto_ctx)
 {
 	dmu_objset_clone_arg_t doca;
 
 	doca.doca_clone = clone;
 	doca.doca_origin = origin;
+	doca.doca_crypto_ctx = crypto_ctx;
 	doca.doca_cred = CRED();
 
 	return (dsl_sync_task(clone,
@@ -1092,8 +1191,12 @@ dmu_objset_sync(objset_t *os, zio_t *pio, dmu_tx_t *tx)
 	    ZB_ROOT_OBJECT, ZB_ROOT_LEVEL, ZB_ROOT_BLKID);
 	arc_release(os->os_phys_buf, &os->os_phys_buf);
 
+    /* we will update the meta/userused/groupused dnodes */
+	dmu_objset_dirty(os);
+
 	dmu_write_policy(os, NULL, 0, 0, &zp);
 
+    // Note that it was DMU_OS_IS_L2CACHEABLE -> !DMU_OS_IS_L2CACHEABLE
 	zio = arc_write(pio, os->os_spa, tx->tx_txg,
 	    os->os_rootbp, os->os_phys_buf, DMU_OS_IS_L2CACHEABLE(os),
 	    DMU_OS_IS_L2COMPRESSIBLE(os), &zp, dmu_objset_write_ready,
@@ -1287,6 +1390,7 @@ dmu_objset_userquota_find_data(dmu_buf_impl_t *db, dmu_tx_t *tx)
 	}
 
 	return (data);
+
 }
 
 void
@@ -1307,6 +1411,21 @@ dmu_objset_userquota_get_ids(dnode_t *dn, boolean_t before, dmu_tx_t *tx)
 	if (before && (flags & (DN_ID_CHKED_BONUS|DN_ID_OLD_EXIST|
 	    DN_ID_CHKED_SPILL)))
 		return;
+
+    /*
+     * If we are destroying the dataset when the key isn't
+     * present we can't decrypt the spill block that contains
+     * the user/group IDs, so ignore the request.
+     *
+     */
+    if (dn->dn_objset->os_destroy_nokey) {
+        mutex_enter(&dn->dn_mtx);
+        //FIXME
+        //dn->dn_id_flags = DN_ID_NOBEFORE;
+        dn->dn_id_flags = DN_ID_CHKED_SPILL;
+        mutex_exit(&dn->dn_mtx);
+        return;
+    }
 
 	if (before && dn->dn_bonuslen != 0)
 		data = DN_BONUS(dn->dn_phys);

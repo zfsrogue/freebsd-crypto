@@ -29,7 +29,7 @@
 .\" Copyright (c) 2014, Xin LI <delphij@FreeBSD.org>
 .\" Copyright (c) 2014-2015, The FreeBSD Foundation, All Rights Reserved.
 .\"
-.\" $FreeBSD$
+.\" $FreeBSD: release/9.1.0/cddl/contrib/opensolaris/cmd/zfs/zfs.8 239420 2012-08-20 13:07:22Z gjb $
 .\"
 .Dd September 14, 2015
 .Dt ZFS 8
@@ -277,10 +277,10 @@
 .Op Ar snapshot Ns | Ns Ar filesystem
 .Nm
 .Cm jail
-.Ar jailid Ns | Ns Ar jailname filesystem
+.Ar jailid filesystem
 .Nm
 .Cm unjail
-.Ar jailid Ns | Ns Ar jailname filesystem
+.Ar jailid filesystem
 .Sh DESCRIPTION
 The
 .Nm
@@ -443,15 +443,9 @@ subcommand. You cannot attach a dataset to one jail and the children of the
 same dataset to another jails. To allow management of the dataset from within
 a jail, the
 .Sy jailed
-property has to be set and the jail needs access to the
-.Pa /dev/zfs
-device. The
+property has to be set. The
 .Sy quota
-property cannot be changed from within a jail. See
-.Xr jail 8
-for information on how to allow mounting
-.Tn ZFS
-datasets from within a jail.
+property cannot be changed from within a jail.
 .Pp
 .No A Tn ZFS
 dataset can be detached from a jail using the
@@ -827,7 +821,7 @@ If no inheritable
 .Tn ACE Ns s
 exist that affect the mode, then the mode is set in accordance to the requested
 mode from the application.
-.It Sy aclmode Ns = Ns Cm discard | groupmask | passthrough | restricted
+.It Sy aclmode Ns = Ns Cm discard | groupmask | passthrough
 Controls how an
 .Tn ACL
 is modified during
@@ -857,32 +851,6 @@ indicates that no changes are made to the
 other than creating or updating the necessary
 .Tn ACL
 entries to represent the new mode of the file or directory.
-An
-.Sy aclmode
-property of
-.Cm restricted
-will cause the
-.Xr chmod 2
-operation to return an error when used on any file or directory which has
-a non-trivial
-.Tn ACL
-whose entries can not be represented by a mode.
-.Xr chmod 2
-is required to change the set user ID, set group ID, or sticky bits on a file
-or directory, as they do not have equivalent
-.Tn ACL
-entries.
-In order to use
-.Xr chmod 2
-on a file or directory with a non-trivial
-.Tn ACL
-when
-.Sy aclmode
-is set to
-.Cm restricted ,
-you must first remove all
-.Tn ACL
-entries which do not represent the current mode.
 .It Sy atime Ns = Ns Cm on | off
 Controls whether the access time for files is updated when they are read.
 Turning this property off avoids producing write traffic when reading files and
@@ -1315,7 +1283,7 @@ bit is respected for the file system. The default value is
 .It Sy sharesmb Ns = Ns Cm on | off | Ar opts
 The
 .Sy sharesmb
-property currently has no effect on
+property has currently no effect o
 .Fx .
 .It Sy sharenfs Ns = Ns Cm on | off | Ar opts
 Controls whether the file system is shared via
@@ -1554,11 +1522,11 @@ for legacy mounts or the
 command for normal file systems, its mount options are set according to its
 properties. The correlation between properties and mount options is as follows:
 .Bl -column -offset 4n "PROPERTY" "MOUNT OPTION"
-.It "PROPERTY	MOUNT OPTION"
-.It "atime	atime/noatime"
-.It "exec	exec/noexec"
-.It "readonly	ro/rw"
-.It "setuid	suid/nosuid"
+.It PROPERTY	MOUNT OPTION
+.It atime	atime/noatime
+.It exec	exec/noexec
+.It readonly	ro/rw
+.It setuid	suid/nosuid
 .El
 .Pp
 In addition, these options can be set on a per-mount basis using the
@@ -1653,8 +1621,6 @@ line using the
 .Fl o
 option is ignored. If the target filesystem already exists, the operation
 completes successfully.
-.It Fl u
-Newly created file system is not mounted.
 .It Fl o Ar property Ns = Ns Ar value
 Sets the specified property as if the command
 .Qq Nm Cm set Ar property Ns = Ns Ar value
@@ -2332,7 +2298,7 @@ The default is
 .Pp
 The default can be changed to include group types.
 .It Fl i
-Translate SID to POSIX ID. This flag currently has no effect on
+Translate SID to POSIX ID. This flag has currently no effect on
 .Fx .
 .El
 .It Xo
@@ -3179,12 +3145,13 @@ to the jail identified by JID
 From now on this file system tree can be managed from within a jail if the
 .Sy jailed
 property has been set. To use this functionality, the jail needs the
-.Va allow.mount
-and
-.Va allow.mount.zfs
-parameters set to 1 and the
 .Va enforce_statfs
-parameter set to a value lower than 2.
+parameter set to
+.Sy 0
+and the
+.Va allow.mount
+parameter set to
+.Sy 1 .
 .Pp
 See
 .Xr jail 8

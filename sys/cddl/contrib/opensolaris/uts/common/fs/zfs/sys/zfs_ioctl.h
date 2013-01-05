@@ -32,6 +32,7 @@
 #include <sys/dsl_deleg.h>
 #include <sys/spa.h>
 #include <sys/zfs_stat.h>
+#include <sys/zcrypt.h>
 
 #ifdef _KERNEL
 #include <sys/nvpair.h>
@@ -83,6 +84,9 @@ typedef enum drr_headertype {
 #define	DMU_BACKUP_FEATURE_DEDUPPROPS		(1<<1)
 #define	DMU_BACKUP_FEATURE_SA_SPILL		(1<<2)
 /* flags #3 - #15 are reserved for incompatible closed-source implementations */
+#define DMU_BACKUP_FEATURE_ENCRYPT      (1<<3)
+#define DMU_BACKUP_FEATURE_LABELED      (1<<4)
+
 #define	DMU_BACKUP_FEATURE_EMBED_DATA		(1<<16)
 #define	DMU_BACKUP_FEATURE_EMBED_DATA_LZ4	(1<<17)
 /* flag #18 is reserved for a Delphix feature */
@@ -93,6 +97,7 @@ typedef enum drr_headertype {
  */
 #define	DMU_BACKUP_FEATURE_MASK	(DMU_BACKUP_FEATURE_DEDUP | \
     DMU_BACKUP_FEATURE_DEDUPPROPS | DMU_BACKUP_FEATURE_SA_SPILL | \
+    DMU_BACKUP_FEATURE_ENCRYPT | DMU_BACKUP_FEATURE_LABELED | \
     DMU_BACKUP_FEATURE_EMBED_DATA | DMU_BACKUP_FEATURE_EMBED_DATA_LZ4 | \
     DMU_BACKUP_FEATURE_LARGE_BLOCKS)
 
@@ -156,7 +161,8 @@ struct drr_object {
 	uint32_t drr_bonuslen;
 	uint8_t drr_checksumtype;
 	uint8_t drr_compress;
-	uint8_t drr_pad[6];
+        uint8_t drr_crypt;
+	uint8_t drr_pad[5];
 	uint64_t drr_toguid;
 	/* bonus content follows */
 };
@@ -360,6 +366,7 @@ typedef struct zfs_cmd {
 	dmu_objset_stats_t zc_objset_stats;
 	struct drr_begin zc_begin_record;
 	zinject_record_t zc_inject_record;
+    zfs_ioc_crypto_t zc_crypto;
 	uint32_t	zc_defer_destroy;
 	uint32_t	zc_flags;
 	uint64_t	zc_action_handle;

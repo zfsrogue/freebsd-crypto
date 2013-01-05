@@ -35,6 +35,7 @@
 #include <sys/zfs_context.h>
 #include <sys/dmu_objset.h>
 #include <sys/dmu_traverse.h>
+#include <sys/dsl_crypto.h>
 #include <sys/dsl_dataset.h>
 #include <sys/dsl_dir.h>
 #include <sys/dsl_prop.h>
@@ -294,6 +295,7 @@ dump_write(dmu_sendarg_t *dsp, dmu_object_type_t type,
 		DDK_SET_LSIZE(&drrw->drr_key, BP_GET_LSIZE(bp));
 		DDK_SET_PSIZE(&drrw->drr_key, BP_GET_PSIZE(bp));
 		DDK_SET_COMPRESS(&drrw->drr_key, BP_GET_COMPRESS(bp));
+		DDK_SET_CRYPT(&drrw->drr_key, BP_GET_CRYPT(bp));
 		drrw->drr_key.ddk_cksum = bp->blk_cksum;
 	}
 
@@ -709,7 +711,7 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 
 #ifdef _KERNEL
 	if (dmu_objset_type(os) == DMU_OST_ZFS) {
-		uint64_t version;
+		uint64_t version, crypt;
 		if (zfs_get_zplprop(os, ZFS_PROP_VERSION, &version) != 0) {
 			kmem_free(drr, sizeof (dmu_replay_record_t));
 			dsl_pool_rele(dp, tag);
@@ -718,6 +720,18 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 		if (version >= ZPL_VERSION_SA) {
 			featureflags |= DMU_BACKUP_FEATURE_SA_SPILL;
 		}
+		crypt = ZIO_CRYPT_OFF;
+        rrw_enter(&ds->ds_dir->dd_pool->dp_config_rwlock, RW_READER, FTAG);
+        dsl_prop_get_ds(ds,
+						zfs_prop_to_name(ZFS_PROP_ENCRYPTION), 8, 1, &crypt, NULL
+						/*,DSL_PROP_GET_EFFECTIVE*/);
+        rrw_exit(&ds->ds_dir->dd_pool->dp_config_rwlock, FTAG);
+        if (crypt != ZIO_CRYPT_OFF) {
+			DMU_SET_FEATUREFLAGS(
+				drr->drr_u.drr_begin.drr_versioninfo,
+				DMU_BACKUP_FEATURE_ENCRYPT);
+        }
+
 	}
 #endif
 
@@ -1114,6 +1128,7 @@ typedef struct dmu_recv_begin_arg {
 	const char *drba_origin;
 	dmu_recv_cookie_t *drba_cookie;
 	cred_t *drba_cred;
+	dsl_crypto_ctx_t *drba_dcc;
 	uint64_t drba_snapobj;
 } dmu_recv_begin_arg_t;
 
@@ -1202,6 +1217,54 @@ recv_begin_check_existing_impl(dmu_recv_begin_arg_t *drba, dsl_dataset_t *ds,
 	return (0);
 
 }
+
+static boolean_t
+dmu_recv_verify_features(dsl_dataset_t *ds, struct drr_begin *drrb)
+{
+	int featureflags;
+    uint64_t crypt;
+
+	featureflags = DMU_GET_FEATUREFLAGS(drrb->drr_versioninfo);
+
+#if 0
+	/* Verify pool version supports SA if SA_SPILL feature set */
+	return ((featureflags & DMU_BACKUP_FEATURE_SA_SPILL) &&
+            (spa_version(dsl_dataset_get_spa(ds)) < SPA_VERSION_SA));
+#endif
+
+	/*
+	 * Currently all these checks only apply to DMU_OST_ZFS
+	 * because they are all to do with the SA spill blocks
+	 * and also how that is used by encrypted filesystems.
+	 * If ZVOLs ever start using SA spill blocks for anything the
+	 * first check at least might need to apply to them too.
+	 */
+	if (drrb->drr_type != DMU_OST_ZFS) {
+		return (B_TRUE);
+	}
+	/* Verify pool version supports SA if SA_SPILL feature set */
+	if ((featureflags & DMU_BACKUP_FEATURE_SA_SPILL) &&
+		spa_version(dsl_dataset_get_spa(ds)) < SPA_VERSION_SA) {
+		return (B_FALSE);
+	}
+
+	/*
+	 * Verify stream came from an encrypted dataset if encryption is on.
+	 */
+	VERIFY(0 == dsl_prop_get_ds(ds, zfs_prop_to_name(ZFS_PROP_ENCRYPTION),
+								8, 1, &crypt, NULL
+								/*, DSL_PROP_GET_EFFECTIVE*/)); //FIXME
+	if ((featureflags & DMU_BACKUP_FEATURE_ENCRYPT) &&
+		!spa_feature_is_enabled(dsl_dataset_get_spa(ds),
+								SPA_FEATURE_ENCRYPTION)) {
+		return (B_FALSE);
+	} else if (crypt != ZIO_CRYPT_OFF) {
+		return (featureflags & DMU_BACKUP_FEATURE_ENCRYPT);
+	}
+
+	return (B_TRUE);
+}
+
 
 static int
 dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
@@ -1302,6 +1365,11 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 			return (error);
 		}
 
+        if (!dmu_recv_verify_features(ds, drrb)) {
+            dsl_dataset_rele(ds, FTAG);
+            return (ENOTSUP);
+        }
+
 		if (drba->drba_origin != NULL) {
 			dsl_dataset_t *origin;
 			error = dsl_dataset_hold(dp, drba->drba_origin,
@@ -1352,7 +1420,7 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 			    drba->drba_snapobj, FTAG, &snap));
 		}
 		dsobj = dsl_dataset_create_sync(ds->ds_dir, recv_clone_name,
-		    snap, crflags, drba->drba_cred, tx);
+		    snap, drba->drba_dcc, crflags, drba->drba_cred, tx);
 		if (drba->drba_snapobj != 0)
 			dsl_dataset_rele(snap, FTAG);
 		dsl_dataset_rele(ds, FTAG);
@@ -1371,7 +1439,7 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 		/* Create new dataset. */
 		dsobj = dsl_dataset_create_sync(dd,
 		    strrchr(tofs, '/') + 1,
-		    origin, crflags, drba->drba_cred, tx);
+		    origin, drba->drba_dcc, crflags, drba->drba_cred, tx);
 		if (origin != NULL)
 			dsl_dataset_rele(origin, FTAG);
 		dsl_dir_rele(dd, FTAG);
@@ -1388,7 +1456,8 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 	 */
 	if (BP_IS_HOLE(dsl_dataset_get_blkptr(newds))) {
 		(void) dmu_objset_create_impl(dp->dp_spa,
-		    newds, dsl_dataset_get_blkptr(newds), drrb->drr_type, tx);
+		    newds, dsl_dataset_get_blkptr(newds), drrb->drr_type,
+									  drba->drba_dcc, tx);
 	}
 
 	drba->drba_cookie->drc_ds = newds;
@@ -1396,13 +1465,15 @@ dmu_recv_begin_sync(void *arg, dmu_tx_t *tx)
 	spa_history_log_internal_ds(newds, "receive", tx, "");
 }
 
+
 /*
  * NB: callers *MUST* call dmu_recv_stream() if dmu_recv_begin()
  * succeeds; otherwise we will leak the holds on the datasets.
  */
 int
 dmu_recv_begin(char *tofs, char *tosnap, struct drr_begin *drrb,
-    boolean_t force, char *origin, dmu_recv_cookie_t *drc)
+    boolean_t force, char *origin, dmu_recv_cookie_t *drc,
+	struct dsl_crypto_ctx *dcc)
 {
 	dmu_recv_begin_arg_t drba = { 0 };
 	dmu_replay_record_t *drr;
@@ -1443,6 +1514,7 @@ dmu_recv_begin(char *tofs, char *tosnap, struct drr_begin *drrb,
 	drba.drba_origin = origin;
 	drba.drba_cookie = drc;
 	drba.drba_cred = CRED();
+    drba.drba_dcc = dcc;
 
 	return (dsl_sync_task(tofs, dmu_recv_begin_check, dmu_recv_begin_sync,
 	    &drba, 5, ZFS_SPACE_CHECK_NORMAL));
@@ -1699,6 +1771,7 @@ receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
 	    !DMU_OT_IS_VALID(drro->drr_bonustype) ||
 	    drro->drr_checksumtype >= ZIO_CHECKSUM_FUNCTIONS ||
 	    drro->drr_compress >= ZIO_COMPRESS_FUNCTIONS ||
+        drro->drr_crypt >= ZIO_CRYPT_FUNCTIONS ||
 	    P2PHASE(drro->drr_blksz, SPA_MINBLOCKSIZE) ||
 	    drro->drr_blksz < SPA_MINBLOCKSIZE ||
 	    drro->drr_blksz > spa_maxblocksize(dmu_objset_spa(rwa->os)) ||

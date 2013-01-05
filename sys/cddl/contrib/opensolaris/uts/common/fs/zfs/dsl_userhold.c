@@ -248,7 +248,7 @@ dsl_dataset_user_hold_sync_one(dsl_dataset_t *ds, const char *htag,
 	dsl_onexit_hold_cleanup(dsl_dataset_get_spa(ds), tmpholds, minor);
 }
 
-static void
+void
 dsl_dataset_user_hold_sync(void *arg, dmu_tx_t *tx)
 {
 	dsl_dataset_user_hold_arg_t *dduha = arg;

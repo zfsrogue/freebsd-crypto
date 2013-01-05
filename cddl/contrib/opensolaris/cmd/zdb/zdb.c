@@ -70,9 +70,7 @@
 #define	ZDB_OT_NAME(idx) ((idx) < DMU_OT_NUMTYPES ?	\
 	dmu_ot[(idx)].ot_name : DMU_OT_IS_VALID(idx) ?	\
 	dmu_ot_byteswap[DMU_OT_BYTESWAP(idx)].ob_name : "UNKNOWN")
-#define	ZDB_OT_TYPE(idx) ((idx) < DMU_OT_NUMTYPES ? (idx) :		\
-	(((idx) == DMU_OTN_ZAP_DATA || (idx) == DMU_OTN_ZAP_METADATA) ?	\
-	DMU_OT_ZAP_OTHER : DMU_OT_NUMTYPES))
+#define	ZDB_OT_TYPE(idx) ((idx) < DMU_OT_NUMTYPES ? (idx) : DMU_OT_NUMTYPES)
 
 #ifndef lint
 extern boolean_t zfs_recover;
@@ -3772,13 +3770,7 @@ main(int argc, char **argv)
 					    argv[i], strerror(errno));
 			}
 		}
-		if (os != NULL) {
-			dump_dir(os);
-		} else if (zopt_objects > 0 && !dump_opt['m']) {
-			dump_dir(spa->spa_meta_objset);
-		} else {
-			dump_zpool(spa);
-		}
+		(os != NULL) ? dump_dir(os) : dump_zpool(spa);
 	} else {
 		flagbits['b'] = ZDB_FLAG_PRINT_BLKPTR;
 		flagbits['c'] = ZDB_FLAG_CHECKSUM;

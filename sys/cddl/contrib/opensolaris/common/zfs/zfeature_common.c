@@ -167,6 +167,10 @@ zpool_feature_init(void)
 	    "Snapshots use less space.", B_TRUE, B_FALSE,
 	    B_FALSE, NULL);
 
+	zfeature_register(SPA_FEATURE_ENCRYPTION,
+	    "com.sun:encryption", "encryption",
+		"ZFS Encryption.", B_TRUE, B_FALSE, B_FALSE, NULL);
+
 	zfeature_register(SPA_FEATURE_LZ4_COMPRESS,
 	    "org.illumos:lz4_compress", "lz4_compress",
 	    "LZ4 compression algorithm support.", B_FALSE, B_FALSE,

@@ -32,6 +32,8 @@
 extern "C" {
 #endif
 
+typedef int (*zfs_iter_cb)(zfs_handle_t *, int, void *);
+
 typedef struct zfs_sort_column {
 	struct zfs_sort_column	*sc_next;
 	struct zfs_sort_column	*sc_last;
@@ -49,7 +51,7 @@ typedef struct zfs_sort_column {
 #define	ZFS_ITER_LITERAL_PROPS	   (1 << 6)
 
 int zfs_for_each(int, char **, int options, zfs_type_t,
-    zfs_sort_column_t *, zprop_list_t **, int, zfs_iter_f, void *);
+    zfs_sort_column_t *, zprop_list_t **, int, zfs_iter_cb, void *);
 int zfs_add_sort_column(zfs_sort_column_t **, const char *, boolean_t);
 void zfs_free_sort_columns(zfs_sort_column_t *);
 boolean_t zfs_sort_only_by_name(const zfs_sort_column_t *);

@@ -1,4 +1,4 @@
-# $FreeBSD$
+# $FreeBSD: release/9.1.0/cddl/usr.bin/ztest/Makefile 219089 2011-02-27 19:41:40Z pjd $
 
 .PATH: ${.CURDIR}/../..//contrib/opensolaris/cmd/ztest
 

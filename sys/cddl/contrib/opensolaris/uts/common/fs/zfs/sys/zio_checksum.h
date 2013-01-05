@@ -44,6 +44,7 @@ typedef struct zio_checksum_info {
 	int		ci_correctable;	/* number of correctable bits	*/
 	int		ci_eck;		/* uses zio embedded checksum? */
 	int		ci_dedup;	/* strong enough for dedup? */
+	int		ci_trunc;	/* truncated checksum + crypto MAC */
 	char		*ci_name;	/* descriptive name */
 } zio_checksum_info_t;
 
@@ -62,6 +63,7 @@ extern zio_checksum_info_t zio_checksum_table[ZIO_CHECKSUM_FUNCTIONS];
  * Checksum routines.
  */
 extern zio_checksum_t zio_checksum_SHA256;
+extern zio_checksum_t zio_checksum_SHAMAC;
 
 extern void zio_checksum_compute(zio_t *zio, enum zio_checksum checksum,
     void *data, uint64_t size);

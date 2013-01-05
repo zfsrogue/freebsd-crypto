@@ -41,6 +41,7 @@
 #include <sys/varargs.h>
 #include <sys/fs/zfs.h>
 #include <sys/avl.h>
+#include <sys/zcrypt.h>
 #include <sys/zfs_ioctl.h>
 #include <libzfs_core.h>
 
@@ -131,6 +132,7 @@ typedef enum zfs_error {
 	EZFS_DIFF,		/* general failure of zfs diff */
 	EZFS_DIFFDATA,		/* bad zfs diff data */
 	EZFS_POOLREADONLY,	/* pool is in read-only mode */
+    EZFS_KEYERR,            /* crypto key not present or invalid */
 	EZFS_UNKNOWN
 } zfs_error_t;
 
@@ -401,6 +403,28 @@ extern int zpool_get_physpath(zpool_handle_t *, char *, size_t);
 extern void zpool_explain_recover(libzfs_handle_t *, const char *, int,
     nvlist_t *);
 
+
+/* Crypto related functions */
+typedef enum {
+    ZFS_CRYPTO_CREATE,
+    ZFS_CRYPTO_PCREATE,
+    ZFS_CRYPTO_CLONE,
+    ZFS_CRYPTO_RECV,
+    ZFS_CRYPTO_KEY_LOAD,
+    ZFS_CRYPTO_KEY_CHANGE
+} zfs_crypto_zckey_t;
+
+extern int zfs_crypto_zckey(libzfs_handle_t *, zfs_crypto_zckey_t, nvlist_t *,
+                            char *, char *, zfs_ioc_crypto_t *, zfs_type_t);
+extern int zfs_crypto_rename_check(zfs_handle_t *, struct zfs_cmd *);
+extern boolean_t zfs_valid_keysource(char *);
+extern boolean_t zfs_valid_set_keysource_change(zfs_handle_t *, char *, char *);
+extern boolean_t zfs_mount_crypto_check(zfs_handle_t *);
+extern void libzfs_crypto_set_key(libzfs_handle_t *, char *, size_t);
+extern void zfs_crypto_set_key(zfs_handle_t *, char *, size_t);
+extern void zfs_crypto_set_clone_newkey(zfs_handle_t *);
+
+
 /*
  * Basic handle manipulations.  These functions do not create or destroy the
  * underlying datasets, only the references to them.
@@ -578,8 +602,7 @@ typedef struct renameflags {
 	int forceunmount : 1;
 } renameflags_t;
 
-extern int zfs_rename(zfs_handle_t *, const char *, const char *,
-    renameflags_t flags);
+extern int zfs_rename(zfs_handle_t *, const char *, renameflags_t flags);
 
 typedef struct sendflags {
 	/* print informational messages (ie, -v was specified) */
@@ -691,6 +714,7 @@ extern boolean_t zfs_dataset_exists(libzfs_handle_t *, const char *,
     zfs_type_t);
 extern int zfs_spa_version(zfs_handle_t *, int *);
 extern boolean_t zfs_bookmark_exists(const char *path);
+extern int zfs_parent_name(const char *, char *, size_t);
 
 /*
  * Mount support functions.
@@ -698,6 +722,7 @@ extern boolean_t zfs_bookmark_exists(const char *path);
 extern boolean_t is_mounted(libzfs_handle_t *, const char *special, char **);
 extern boolean_t zfs_is_mounted(zfs_handle_t *, char **);
 extern int zfs_mount(zfs_handle_t *, const char *, int);
+extern int zfs_mountall(zfs_handle_t *, int);
 extern int zfs_unmount(zfs_handle_t *, const char *, int);
 extern int zfs_unmountall(zfs_handle_t *, int);
 
@@ -740,6 +765,18 @@ extern int zfs_jail(zfs_handle_t *, int, int);
 #define	verify(EX)	assert(EX)
 #endif
 #endif
+
+/*
+ * Crypto key functions for datasets
+ */
+extern boolean_t zfs_is_encrypted(zfs_handle_t *);
+extern boolean_t zfs_changing_key(zfs_handle_t *);
+
+extern int zfs_key_load(zfs_handle_t *, boolean_t, boolean_t, boolean_t);
+extern int zfs_key_unload(zfs_handle_t *, boolean_t);
+extern int zfs_key_change(zfs_handle_t *, boolean_t, nvlist_t *);
+extern int zfs_key_new(zfs_handle_t *);
+
 
 /*
  * Utility function to convert a number to a human-readable form.

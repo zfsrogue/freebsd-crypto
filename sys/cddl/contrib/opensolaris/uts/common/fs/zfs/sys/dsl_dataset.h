@@ -45,6 +45,7 @@ extern "C" {
 struct dsl_dataset;
 struct dsl_dir;
 struct dsl_pool;
+struct dsl_crypto_ctx;
 
 #define	DS_FLAG_INCONSISTENT	(1ULL<<0)
 #define	DS_IS_INCONSISTENT(ds)	\
@@ -219,9 +220,17 @@ void dsl_dataset_disown(dsl_dataset_t *ds, void *tag);
 void dsl_dataset_name(dsl_dataset_t *ds, char *name);
 boolean_t dsl_dataset_tryown(dsl_dataset_t *ds, void *tag);
 uint64_t dsl_dataset_create_sync(dsl_dir_t *pds, const char *lastname,
-    dsl_dataset_t *origin, uint64_t flags, cred_t *, dmu_tx_t *);
+    dsl_dataset_t *origin, struct dsl_crypto_ctx *dcc, uint64_t flags, cred_t *, dmu_tx_t *);
 uint64_t dsl_dataset_create_sync_dd(dsl_dir_t *dd, dsl_dataset_t *origin,
-    uint64_t flags, dmu_tx_t *tx);
+    struct dsl_crypto_ctx *dcc, uint64_t flags, dmu_tx_t *tx);
+int dsl_dataset_destroy(dsl_dataset_t *ds, void *tag, boolean_t defer);
+int dsl_snapshots_destroy(char *fsname, char *snapname, boolean_t defer);
+dsl_checkfunc_t dsl_dataset_destroy_check;
+dsl_syncfunc_t dsl_dataset_destroy_sync;
+dsl_checkfunc_t dsl_dataset_snapshot_check;
+dsl_syncfunc_t dsl_dataset_snapshot_sync;
+dsl_syncfunc_t dsl_dataset_user_hold_sync;
+int dsl_dataset_rename(char *name, const char *newname, int flags);
 int dsl_dataset_snapshot(nvlist_t *snaps, nvlist_t *props, nvlist_t *errors);
 int dsl_dataset_promote(const char *name, char *conflsnap);
 int dsl_dataset_clone_swap(dsl_dataset_t *clone, dsl_dataset_t *origin_head,
@@ -289,6 +298,9 @@ int dsl_dataset_snapshot_check_impl(dsl_dataset_t *ds, const char *snapname,
 void dsl_dataset_snapshot_sync_impl(dsl_dataset_t *ds, const char *snapname,
     dmu_tx_t *tx);
 
+int dmu_get_recursive_snaps_nvl(char *fsname, const char *snapname,
+	nvlist_t *snaps);
+
 void dsl_dataset_remove_from_next_clones(dsl_dataset_t *ds, uint64_t obj,
     dmu_tx_t *tx);
 void dsl_dataset_recalc_head_uniq(dsl_dataset_t *ds);
@@ -300,7 +312,7 @@ int dsl_dataset_snap_remove(dsl_dataset_t *ds, const char *name, dmu_tx_t *tx,
 void dsl_dataset_set_refreservation_sync_impl(dsl_dataset_t *ds,
     zprop_source_t source, uint64_t value, dmu_tx_t *tx);
 void dsl_dataset_zapify(dsl_dataset_t *ds, dmu_tx_t *tx);
-int dsl_dataset_rollback(const char *fsname, void *owner, nvlist_t *result);
+int dsl_dataset_rollback(const char *fsname, void *owner, struct dsl_crypto_ctx *dcc, nvlist_t *result);
 
 #ifdef ZFS_DEBUG
 #define	dprintf_ds(ds, fmt, ...) do { \

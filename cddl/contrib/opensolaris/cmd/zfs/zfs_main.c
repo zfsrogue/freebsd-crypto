@@ -103,6 +103,7 @@ static int zfs_do_userspace(int argc, char **argv);
 static int zfs_do_allow(int argc, char **argv);
 static int zfs_do_unallow(int argc, char **argv);
 static int zfs_do_hold(int argc, char **argv);
+static int zfs_do_key(int argc, char **argv);
 static int zfs_do_holds(int argc, char **argv);
 static int zfs_do_release(int argc, char **argv);
 static int zfs_do_diff(int argc, char **argv);
@@ -158,6 +159,7 @@ typedef enum {
 	HELP_RELEASE,
 	HELP_DIFF,
 	HELP_BOOKMARK,
+    HELP_KEY,
 } zfs_help_t;
 
 typedef struct zfs_command {
@@ -211,6 +213,7 @@ static zfs_command_t command_table[] = {
 	{ "holds",	zfs_do_holds,		HELP_HOLDS		},
 	{ "release",	zfs_do_release,		HELP_RELEASE		},
 	{ "diff",	zfs_do_diff,		HELP_DIFF		},
+    { "key",        zfs_do_key,             HELP_KEY                },
 	{ NULL },
 	{ "jail",	zfs_do_jail,		HELP_JAIL		},
 	{ "unjail",	zfs_do_unjail,		HELP_UNJAIL		},
@@ -228,7 +231,7 @@ get_usage(zfs_help_t idx)
 		return (gettext("\tclone [-p] [-o property=value] ... "
 		    "<snapshot> <filesystem|volume>\n"));
 	case HELP_CREATE:
-		return (gettext("\tcreate [-pu] [-o property=value] ... "
+		return (gettext("\tcreate [-p] [-o property=value] ... "
 		    "<filesystem>\n"
 		    "\tcreate [-ps] [-b blocksize] [-o property=value] ... "
 		    "-V <size> <volume>\n"));
@@ -250,9 +253,9 @@ get_usage(zfs_help_t idx)
 		return (gettext("\tupgrade [-v]\n"
 		    "\tupgrade [-r] [-V version] <-a | filesystem ...>\n"));
 	case HELP_JAIL:
-		return (gettext("\tjail <jailid|jailname> <filesystem>\n"));
+		return (gettext("\tjail <jailid> <filesystem>\n"));
 	case HELP_UNJAIL:
-		return (gettext("\tunjail <jailid|jailname> <filesystem>\n"));
+		return (gettext("\tunjail <jailid> <filesystem>\n"));
 	case HELP_LIST:
 		return (gettext("\tlist [-Hp] [-r|-d max] [-o property[,...]] "
 		    "[-s property]...\n\t    [-S property]... [-t type[,...]] "
@@ -334,6 +337,13 @@ get_usage(zfs_help_t idx)
 		    "[snapshot|filesystem]\n"));
 	case HELP_BOOKMARK:
 		return (gettext("\tbookmark <snapshot> <bookmark>\n"));
+    case HELP_KEY:
+        return (gettext(
+                        "\tkey -l <-a | [-r] filesystem|volume>\n"
+                        "\tkey -u [-f] <-a | [-r] filesystem|volume>\n"
+                        "\tkey -c [ -o <keysource=value>]"
+                        " <-a | [-r] filesystem|volume>\n"
+                        "\tkey -K <-a | [-r] filesystem|volume>\n"));
 	}
 
 	abort();
@@ -617,7 +627,7 @@ static int
 zfs_do_clone(int argc, char **argv)
 {
 	zfs_handle_t *zhp = NULL;
-	boolean_t parents = B_FALSE;
+	boolean_t parents = B_FALSE, clonenewkey = B_FALSE;
 	nvlist_t *props;
 	int ret = 0;
 	int c;
@@ -626,7 +636,7 @@ zfs_do_clone(int argc, char **argv)
 		nomem();
 
 	/* check options */
-	while ((c = getopt(argc, argv, "o:p")) != -1) {
+	while ((c = getopt(argc, argv, "o:pK")) != -1) {
 		switch (c) {
 		case 'o':
 			if (parseprop(props, optarg))
@@ -635,6 +645,9 @@ zfs_do_clone(int argc, char **argv)
 		case 'p':
 			parents = B_TRUE;
 			break;
+        case 'K':
+            clonenewkey = B_TRUE;
+            break;
 		case '?':
 			(void) fprintf(stderr, gettext("invalid option '%c'\n"),
 			    optopt);
@@ -679,6 +692,11 @@ zfs_do_clone(int argc, char **argv)
 			return (1);
 	}
 
+    /* Pass on clonenewkey CLI argument */
+    if (clonenewkey) {
+        zfs_crypto_set_clone_newkey(zhp);
+    }
+
 	/* pass to libzfs */
 	ret = zfs_clone(zhp, argv[1], props);
 
@@ -722,7 +740,7 @@ usage:
 }
 
 /*
- * zfs create [-pu] [-o prop=value] ... fs
+ * zfs create [-p] [-o prop=value] ... fs
  * zfs create [-ps] [-b blocksize] [-o prop=value] ... -V vol size
  *
  * Create a new dataset.  This command can be used to create filesystems
@@ -735,8 +753,6 @@ usage:
  * SPA_VERSION_REFRESERVATION, we set a refreservation instead.
  *
  * The '-p' flag creates all the non-existing ancestors of the target first.
- *
- * The '-u' flag prevents mounting of newly created file system.
  */
 static int
 zfs_do_create(int argc, char **argv)
@@ -816,9 +832,10 @@ zfs_do_create(int argc, char **argv)
 		    "used when creating a volume\n"));
 		goto badusage;
 	}
+
 	if (nomount && type != ZFS_TYPE_FILESYSTEM) {
 		(void) fprintf(stderr, gettext("'-u' can only be "
-		    "used when creating a file system\n"));
+			"used when creating a file system\n"));
 		goto badusage;
 	}
 
@@ -1484,7 +1501,7 @@ is_recvd_column(zprop_get_cbdata_t *cbp)
  * Invoked to display the properties for a single dataset.
  */
 static int
-get_callback(zfs_handle_t *zhp, void *data)
+get_callback(zfs_handle_t *zhp, int depth, void *data)
 {
 	char buf[ZFS_MAXPROPLEN];
 	char rbuf[ZFS_MAXPROPLEN];
@@ -1844,8 +1861,17 @@ typedef struct inherit_cbdata {
 	boolean_t cb_received;
 } inherit_cbdata_t;
 
+
 static int
-inherit_recurse_cb(zfs_handle_t *zhp, void *data)
+inherit_cb(zfs_handle_t *zhp, int depth, void *data)
+{
+	inherit_cbdata_t *cb = data;
+
+	return (zfs_prop_inherit(zhp, cb->cb_propname, cb->cb_received) != 0);
+}
+
+static int
+inherit_recurse_cb(zfs_handle_t *zhp, int depth, void *data)
 {
 	inherit_cbdata_t *cb = data;
 	zfs_prop_t prop = zfs_name_to_prop(cb->cb_propname);
@@ -1858,15 +1884,7 @@ inherit_recurse_cb(zfs_handle_t *zhp, void *data)
 	    !zfs_prop_valid_for_type(prop, zfs_get_type(zhp)))
 		return (0);
 
-	return (zfs_prop_inherit(zhp, cb->cb_propname, cb->cb_received) != 0);
-}
-
-static int
-inherit_cb(zfs_handle_t *zhp, void *data)
-{
-	inherit_cbdata_t *cb = data;
-
-	return (zfs_prop_inherit(zhp, cb->cb_propname, cb->cb_received) != 0);
+    return (inherit_cb(zhp, depth, data));
 }
 
 static int
@@ -1981,7 +1999,7 @@ same_pool(zfs_handle_t *zhp, const char *name)
 }
 
 static int
-upgrade_list_callback(zfs_handle_t *zhp, void *data)
+upgrade_list_callback(zfs_handle_t *zhp, int depth, void *data)
 {
 	upgrade_cbdata_t *cb = data;
 	int version = zfs_prop_get_int(zhp, ZFS_PROP_VERSION);
@@ -2017,7 +2035,7 @@ upgrade_list_callback(zfs_handle_t *zhp, void *data)
 }
 
 static int
-upgrade_set_callback(zfs_handle_t *zhp, void *data)
+upgrade_set_callback(zfs_handle_t *zhp, int depth, void *data)
 {
 	upgrade_cbdata_t *cb = data;
 	int version = zfs_prop_get_int(zhp, ZFS_PROP_VERSION);
@@ -3035,7 +3053,7 @@ print_dataset(zfs_handle_t *zhp, list_cbdata_t *cb)
  * Generic callback function to list a dataset or snapshot.
  */
 static int
-list_callback(zfs_handle_t *zhp, void *data)
+list_callback(zfs_handle_t *zhp, int depth, void *data)
 {
 	list_cbdata_t *cbp = data;
 
@@ -3211,7 +3229,6 @@ zfs_do_rename(int argc, char **argv)
 	int ret = 0;
 	int types;
 	boolean_t parents = B_FALSE;
-	char *snapshot = NULL;
 
 	/* check options */
 	while ((c = getopt(argc, argv, "fpru")) != -1) {
@@ -3268,7 +3285,7 @@ zfs_do_rename(int argc, char **argv)
 	}
 
 	if (flags.nounmount && parents) {
-		(void) fprintf(stderr, gettext("-u and -p options are mutually "
+		(void) fprintf(stderr, gettext("-u and -r options are mutually "
 		    "exclusive\n"));
 		usage(B_FALSE);
 	}
@@ -3280,19 +3297,6 @@ zfs_do_rename(int argc, char **argv)
 	else
 		types = ZFS_TYPE_DATASET;
 
-	if (flags.recurse) {
-		/*
-		 * When we do recursive rename we are fine when the given
-		 * snapshot for the given dataset doesn't exist - it can
-		 * still exists below.
-		 */
-
-		snapshot = strchr(argv[0], '@');
-		assert(snapshot != NULL);
-		*snapshot = '\0';
-		snapshot++;
-	}
-
 	if ((zhp = zfs_open(g_zfs, argv[0], types)) == NULL)
 		return (1);
 
@@ -3303,7 +3307,7 @@ zfs_do_rename(int argc, char **argv)
 		return (1);
 	}
 
-	ret = (zfs_rename(zhp, snapshot, argv[1], flags) != 0);
+	ret = (zfs_rename(zhp, argv[1], flags) != 0);
 
 	zfs_close(zhp);
 	return (ret);
@@ -3535,10 +3539,25 @@ typedef struct set_cbdata {
 } set_cbdata_t;
 
 static int
-set_callback(zfs_handle_t *zhp, void *data)
+set_callback(zfs_handle_t *zhp, int depth, void *data)
 {
 	set_cbdata_t *cbp = data;
 
+    // FIXME
+#if 0
+    //zprop_setflags_t flags; // FIXME
+
+    if (strcmp(cbp->cb_propname, "share") == 0) {
+        return (do_set_share(zhp, cbp->cb_value,
+                             cbp->cb_flags &  SET_CB_UNSET));
+    }
+
+    flags = (depth > 0 ? ZPROP_SET_DESCENDANT : 0);
+
+	if (zfs_prop_set_extended(zhp, cbp->cb_propname, cbp->cb_value,
+                              flags) != 0) {
+    }
+#endif
 	if (zfs_prop_set(zhp, cbp->cb_propname, cbp->cb_value) != 0) {
 		switch (libzfs_errno(g_zfs)) {
 		case EZFS_MOUNTFAILED:
@@ -5474,7 +5493,7 @@ print_holds(boolean_t scripted, size_t nwidth, size_t tagwidth, nvlist_t *nvl)
  * Generic callback function to list a dataset or snapshot.
  */
 static int
-holds_callback(zfs_handle_t *zhp, void *data)
+holds_callback(zfs_handle_t *zhp, int depth, void *data)
 {
 	holds_cbdata_t *cbp = data;
 	nvlist_t *top_nvl = *cbp->cb_nvlp;
@@ -5725,7 +5744,10 @@ share_mount_one(zfs_handle_t *zhp, int op, int flags, char *protocol,
 	/*
 	 * Ignore any filesystems which don't apply to us. This
 	 * includes those with a legacy mountpoint, or those with
-	 * legacy share options.
+	 * legacy share options. We also have to ignore those that
+     * are encrypted that don't currently have their key available
+     * (but that check is done in zfs_is_mountable(), called from
+     * zfs_mount() below).
 	 */
 	verify(zfs_prop_get(zhp, ZFS_PROP_MOUNTPOINT, mountpoint,
 	    sizeof (mountpoint), NULL, NULL, 0, B_FALSE) == 0);
@@ -6494,6 +6516,209 @@ zfs_do_unmount(int argc, char **argv)
 {
 	return (unshare_unmount(OP_MOUNT, argc, argv));
 }
+enum keycmd_e {
+    KEY_NONE = 0,
+    KEY_LOAD,
+    KEY_UNLOAD,
+    KEY_CHANGE,
+    KEY_NEW
+};
+
+typedef struct key_cbdata {
+    enum keycmd_e   keycmd;
+    boolean_t       force;
+    boolean_t       recurse;
+    nvlist_t        *props;
+} key_cbdata_t;
+
+
+/*ARGSUSED*/
+static int
+zfs_key_callback(zfs_handle_t *zhp, int depth, void *data)
+{
+    key_cbdata_t *cb = data;
+    int ret;
+
+    /*
+     * Skip over non encrypted datasets when recursing, but other
+     * wise attempt the command so we get the correct error message.
+     */
+    if (!zfs_is_encrypted(zhp) && cb->recurse) {
+        return (0);
+    }
+
+    switch (cb->keycmd) {
+    case KEY_LOAD:
+        ret = zfs_key_load(zhp, B_TRUE, B_TRUE, cb->recurse);
+        break;
+    case KEY_UNLOAD:
+        ret = zfs_key_unload(zhp, cb->force);
+        break;
+    case KEY_CHANGE:
+        ret = zfs_key_change(zhp, cb->recurse, cb->props);
+        break;
+    case KEY_NEW:
+        ret = zfs_key_new(zhp);
+        break;
+    default:
+        abort();
+    }
+
+    if (cb->recurse && ret != 0) {
+        return (0);
+    }
+
+    return (ret);
+}
+
+int
+zfs_do_key(int argc, char **argv)
+{
+    int error = 1, options = 0;
+    key_cbdata_t cb = { 0 };
+    int flags = ZFS_ITER_ARGS_CAN_BE_PATHS;
+    char c, *propname, *propval = NULL;
+    zfs_prop_t zprop;
+    boolean_t all = B_FALSE, cmdset = B_FALSE;
+    char *strval;
+    zfs_type_t types = ZFS_TYPE_FILESYSTEM | ZFS_TYPE_VOLUME;
+
+
+    while ((c = getopt(argc, argv, "arflucKo:")) != -1) {
+        switch (c) {
+        case 'a':
+            all = B_TRUE;
+            cb.recurse = B_TRUE;
+            break;
+        case 'r':
+            flags |= ZFS_ITER_RECURSE;
+            cb.recurse = B_TRUE;
+            break;
+        case 'f':
+            cb.force = B_TRUE;
+            break;
+        case 'l':
+            if (cmdset)
+                usage(B_FALSE);
+            cb.keycmd = KEY_LOAD;
+            cmdset = B_TRUE;
+            break;
+        case 'u':
+            if (cmdset)
+                usage(B_FALSE);
+            cb.keycmd = KEY_UNLOAD;
+            cmdset = B_TRUE;
+            /*
+             * unload needs to get rid of the "auto"loaded
+             * snapshot keyrings as well.
+             */
+            types = ZFS_TYPE_DATASET;
+            break;
+        case 'c':
+            if (cmdset)
+                usage(B_FALSE);
+            cb.keycmd = KEY_CHANGE;
+            cmdset = B_TRUE;
+            break;
+        case 'K':
+            if (cmdset)
+                usage(B_FALSE);
+            cb.keycmd = KEY_NEW;
+            cmdset = B_TRUE;
+            break;
+        case 'o':
+            propname = optarg;
+            if ((propval = strchr(optarg, '=')) == NULL) {
+                (void) fprintf(stderr, gettext("missing "
+                                               "'=' for -o option\n"));
+                goto error;
+            }
+
+            *propval = '\0';
+            propval++;
+
+            zprop = zfs_name_to_prop(propname);
+            if (zprop != ZFS_PROP_KEYSOURCE) {
+                (void) fprintf(stderr, gettext("Invalid "
+                                               "property for key operation: '%s'\n"),
+                               propname);
+                goto error;
+            }
+
+            if (cb.props == NULL &&
+                nvlist_alloc(&cb.props, NV_UNIQUE_NAME, 0) != 0) {
+                (void) fprintf(stderr, gettext("internal "
+                                               "error: out of memory\n"));
+                goto error;
+            }
+
+            if (nvlist_lookup_string(cb.props, propname,
+                                     &strval) == 0) {
+                (void) fprintf(stderr, gettext("property '%s' "
+                                               "specified multiple times\n"), propname);
+                goto error;
+            }
+            if (nvlist_add_string(cb.props, propname,
+                                  propval) != 0) {
+                (void) fprintf(stderr, gettext("internal "
+                                               "error: out of memory\n"));
+                goto error;
+            }
+
+            options += 2;
+            break;
+
+        case '?':
+        default:
+            (void) fprintf(stderr, gettext("invalid option '%c'\n"),
+                           optopt);
+            usage(B_FALSE);
+        }
+    }
+
+    argc -= optind;
+    argv += optind;
+
+    if ((!all && !argc)) {
+        usage(B_FALSE);
+        goto error;
+    }
+
+    if (all && argc) {
+        usage(B_FALSE);
+        goto error;
+    }
+
+    if (cb.keycmd == KEY_NONE) {
+        usage(B_FALSE);
+        goto error;
+    }
+    /* Key change is the only command that allows options */
+    if (cb.keycmd != KEY_CHANGE && cb.props != NULL) {
+        (void) fprintf(stderr, gettext(
+                                       "Property options only allowed during key change.\n"));
+        usage(B_FALSE);
+        goto error;
+    }
+
+    if (cb.force && cb.keycmd != KEY_UNLOAD) {
+        (void) fprintf(stderr,
+                       gettext("Force flag only applies to key unload.\n"));
+        usage(B_FALSE);
+        goto error;
+    }
+
+    error = zfs_for_each(argc, argv, flags, types, NULL, NULL, 0,
+                         zfs_key_callback, &cb);
+
+ error:
+    if (cb.props != NULL) {
+        nvlist_free(cb.props);
+    }
+    return (error);
+}
+
+
 
 /*
  * zfs unshare -a
@@ -6527,9 +6752,9 @@ do_jail(int argc, char **argv, int attach)
 		usage(B_FALSE);
 	}
 
-	jailid = jail_getid(argv[1]);
-	if (jailid < 0) {
-		(void) fprintf(stderr, gettext("invalid jail id or name\n"));
+	jailid = atoi(argv[1]);
+	if (jailid == 0) {
+		(void) fprintf(stderr, gettext("invalid jailid\n"));
 		usage(B_FALSE);
 	}
 

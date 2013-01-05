@@ -1,11 +1,11 @@
-# $FreeBSD$
+# $FreeBSD: release/9.1.0/cddl/sbin/zpool/Makefile 219089 2011-02-27 19:41:40Z pjd $
 
 .PATH: ${.CURDIR}/../../../cddl/contrib/opensolaris/cmd/zpool
 .PATH: ${.CURDIR}/../../../cddl/contrib/opensolaris/cmd/stat/common
 .PATH: ${.CURDIR}/../../../sys/cddl/contrib/opensolaris/common/zfs
 
 PROG=	zpool
-MAN=	zpool.8 zpool-features.7
+MAN=	zpool.8 zpool-features.5
 SRCS=	zpool_main.c zpool_vdev.c zpool_iter.c zpool_util.c zfs_comutil.c
 SRCS+=	timestamp.c
 

@@ -1,4 +1,4 @@
-# $FreeBSD$
+# $FreeBSD: release/9.1.0/cddl/usr.sbin/zdb/Makefile 219089 2011-02-27 19:41:40Z pjd $
 
 .PATH: ${.CURDIR}/../../../cddl/contrib/opensolaris/cmd/zdb
 

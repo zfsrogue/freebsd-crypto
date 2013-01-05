@@ -24,6 +24,7 @@
  * Copyright (c) 2013 Steven Hartland. All rights reserved.
  */
 
+#include <sys/dsl_crypto.h>
 #include <sys/dsl_pool.h>
 #include <sys/dsl_dataset.h>
 #include <sys/dsl_prop.h>
@@ -430,7 +431,7 @@ dsl_pool_close(dsl_pool_t *dp)
 }
 
 dsl_pool_t *
-dsl_pool_create(spa_t *spa, nvlist_t *zplprops, uint64_t txg)
+dsl_pool_create(spa_t *spa, dsl_crypto_ctx_t *dcc, nvlist_t *zplprops, uint64_t txg)
 {
 	int err;
 	dsl_pool_t *dp = dsl_pool_open_impl(spa, txg);
@@ -443,7 +444,7 @@ dsl_pool_create(spa_t *spa, nvlist_t *zplprops, uint64_t txg)
 
 	/* create and open the MOS (meta-objset) */
 	dp->dp_meta_objset = dmu_objset_create_impl(spa,
-	    NULL, &dp->dp_meta_rootbp, DMU_OST_META, tx);
+        NULL, &dp->dp_meta_rootbp, DMU_OST_META, NULL, tx);
 
 	/* create the pool directory */
 	err = zap_create_claim(dp->dp_meta_objset, DMU_POOL_DIRECTORY_OBJECT,
@@ -482,12 +483,12 @@ dsl_pool_create(spa_t *spa, nvlist_t *zplprops, uint64_t txg)
 		dsl_pool_create_origin(dp, tx);
 
 	/* create the root dataset */
-	obj = dsl_dataset_create_sync_dd(dp->dp_root_dir, NULL, 0, tx);
+	obj = dsl_dataset_create_sync_dd(dp->dp_root_dir, NULL, dcc, 0, tx);
 
 	/* create the root objset */
 	VERIFY0(dsl_dataset_hold_obj(dp, obj, FTAG, &ds));
 	os = dmu_objset_create_impl(dp->dp_spa, ds,
-	    dsl_dataset_get_blkptr(ds), DMU_OST_ZFS, tx);
+                       dsl_dataset_get_blkptr(ds), DMU_OST_ZFS, dcc, tx);
 #ifdef _KERNEL
 	zfs_create_fs(os, kcred, zplprops, tx);
 #endif
@@ -921,7 +922,7 @@ dsl_pool_create_origin(dsl_pool_t *dp, dmu_tx_t *tx)
 
 	/* create the origin dir, ds, & snap-ds */
 	dsobj = dsl_dataset_create_sync(dp->dp_root_dir, ORIGIN_DIR_NAME,
-	    NULL, 0, kcred, tx);
+	    NULL, NULL, 0, kcred, tx);
 	VERIFY0(dsl_dataset_hold_obj(dp, dsobj, FTAG, &ds));
 	dsl_dataset_snapshot_sync_impl(ds, ORIGIN_DIR_NAME, tx);
 	VERIFY0(dsl_dataset_hold_obj(dp, dsl_dataset_phys(ds)->ds_prev_snap_obj,

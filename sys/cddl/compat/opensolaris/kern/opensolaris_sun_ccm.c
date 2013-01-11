@@ -40,7 +40,7 @@
  *
  */
 
-#define ZFS_CRYPTO_VERBOSE
+//#define ZFS_CRYPTO_VERBOSE
 
 #include <sys/cdefs.h>
 #include <sys/types.h>
@@ -281,8 +281,12 @@ int sun_ccm_encrypt_and_auth(rijndael_ctx *cc_aes,
 
             // Copy what we have to temp
             memcpy(tmp, src, remainder);
+            // Clear the rest, in case we don't have more
+            memset(&tmp[remainder], 0, AES_BLOCK_LEN - remainder);
+
             src+=remainder;
             srclen-=remainder;
+            len -= remainder;
 
             // Advance to next buffer, but only if srclen was smaller than 16
             while(remainder < AES_BLOCK_LEN) {
@@ -297,13 +301,13 @@ int sun_ccm_encrypt_and_auth(rijndael_ctx *cc_aes,
                 src += avail;
                 srclen-=avail;
                 remainder += avail;
+                len -= avail;
             }
 
             // We have successfully loaded "tmp" with another block.
             // Process it:
             CCMP_ENCRYPT(i, t, b0, tmp, tmp, e, AES_BLOCK_LEN);
             i++;
-            len -= AES_BLOCK_LEN;
 
             // Now it is time to write it out, and make sure there is space.
             remainder = dstlen;
@@ -336,13 +340,17 @@ int sun_ccm_encrypt_and_auth(rijndael_ctx *cc_aes,
 #ifdef ZFS_CRYPTO_VERBOSE
             printf("Advancing src\n");
 #endif
-            M_NEXTBUFFER(m_plain, m_plain->m_next, src, srclen);
+            if (m_plain) {
+                M_NEXTBUFFER(m_plain, m_plain->m_next, src, srclen);
+            }
         }
         if (dstlen == 0) {
 #ifdef ZFS_CRYPTO_VERBOSE
             printf("Advancing dst\n");
 #endif
-            M_NEXTBUFFER(m_cipher, m_cipher->m_next, dst, dstlen);
+            if (m_cipher) {
+                M_NEXTBUFFER(m_cipher, m_cipher->m_next, dst, dstlen);
+            }
         }
     } // while total length processing
 
@@ -528,8 +536,11 @@ int sun_ccm_decrypt_and_auth(rijndael_ctx *cc_aes,
 
             // Copy what we have to temp
             memcpy(tmp, src, remainder);
+            // Clear the rest, incase we have no more input
+            memset(&tmp[remainder], 0, AES_BLOCK_LEN-remainder);
             src+=remainder;
             srclen-=remainder;
+            len -= remainder;
 
             // Advance to next buffer, but only if srclen was smaller than 16
             while(remainder < AES_BLOCK_LEN) {
@@ -544,13 +555,13 @@ int sun_ccm_decrypt_and_auth(rijndael_ctx *cc_aes,
                 src += avail;
                 srclen-=avail;
                 remainder += avail;
+                len -= avail;
             }
 
             // We have successfully loaded "tmp" with another block.
             // Process it:
             CCMP_DECRYPT(i, b, b0, tmp, tmp, a, AES_BLOCK_LEN);
             i++;
-            len -= AES_BLOCK_LEN;
 
             // Now it is time to write it out, and make sure there is space.
             remainder = dstlen;
@@ -581,13 +592,17 @@ int sun_ccm_decrypt_and_auth(rijndael_ctx *cc_aes,
 #ifdef ZFS_CRYPTO_VERBOSE
             printf("Advancing src\n");
 #endif
-            M_NEXTBUFFER(m_cipher, m_cipher->m_next, src, srclen);
+            if (m_cipher) {
+                M_NEXTBUFFER(m_cipher, m_cipher->m_next, src, srclen);
+            }
         }
         if (dstlen == 0) {
 #ifdef ZFS_CRYPTO_VERBOSE
             printf("Advancing dst\n");
 #endif
-            M_NEXTBUFFER(m_plain, m_plain->m_next, dst, dstlen);
+            if (m_plain) {
+                M_NEXTBUFFER(m_plain, m_plain->m_next, dst, dstlen);
+            }
         }
     } // while total length processing
 

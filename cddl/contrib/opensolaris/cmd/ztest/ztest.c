@@ -2263,7 +2263,7 @@ ztest_spa_create_destroy(ztest_ds_t *zd, uint64_t id)
 	 */
 	nvroot = make_vdev_root("/dev/bogus", NULL, 0, 0, 0, 0, 0, 1);
 	VERIFY3U(ENOENT, ==,
-	    spa_create("ztest_bad_file", nvroot, NULL, NULL, NULL));
+	    spa_create("ztest_bad_file", nvroot, NULL, NULL, NULL, NULL));
 	nvlist_free(nvroot);
 
 	/*
@@ -2271,7 +2271,7 @@ ztest_spa_create_destroy(ztest_ds_t *zd, uint64_t id)
 	 */
 	nvroot = make_vdev_root("/dev/bogus", NULL, 0, 0, 0, 0, 2, 1);
 	VERIFY3U(ENOENT, ==,
-	    spa_create("ztest_bad_mirror", nvroot, NULL, NULL, NULL));
+	    spa_create("ztest_bad_mirror", nvroot, NULL, NULL, NULL, NULL));
 	nvlist_free(nvroot);
 
 	/*
@@ -2280,7 +2280,7 @@ ztest_spa_create_destroy(ztest_ds_t *zd, uint64_t id)
 	 */
 	(void) rw_rdlock(&ztest_name_lock);
 	nvroot = make_vdev_root("/dev/bogus", NULL, 0, 0, 0, 0, 0, 1);
-	VERIFY3U(EEXIST, ==, spa_create(zo->zo_pool, nvroot, NULL, NULL, NULL));
+	VERIFY3U(EEXIST, ==, spa_create(zo->zo_pool, nvroot, NULL, NULL, NULL, NULL));
 	nvlist_free(nvroot);
 	VERIFY3U(0, ==, spa_open(zo->zo_pool, &spa, FTAG));
 	VERIFY3U(EBUSY, ==, spa_destroy(zo->zo_pool));
@@ -3018,7 +3018,7 @@ static int
 ztest_dataset_create(char *dsname)
 {
 	uint64_t zilset = ztest_random(100);
-	int err = dmu_objset_create(dsname, DMU_OST_OTHER, 0,
+	int err = dmu_objset_create(dsname, DMU_OST_OTHER, 0, NULL,
 	    ztest_objset_create_cb, NULL);
 
 	if (err || zilset < 80)
@@ -3173,7 +3173,7 @@ ztest_dmu_objset_create_destroy(ztest_ds_t *zd, uint64_t id)
 	 * Verify that we cannot create an existing dataset.
 	 */
 	VERIFY3U(EEXIST, ==,
-	    dmu_objset_create(name, DMU_OST_OTHER, 0, NULL, NULL));
+	    dmu_objset_create(name, DMU_OST_OTHER, 0, NULL, NULL, NULL));
 
 	/*
 	 * Verify that we can hold an objset that is also owned.
@@ -3282,7 +3282,7 @@ ztest_dsl_dataset_promote_busy(ztest_ds_t *zd, uint64_t id)
 	if (error)
 		fatal(0, "dmu_open_snapshot(%s) = %d", snap1name, error);
 
-	error = dmu_objset_clone(clone1name, dmu_objset_ds(clone), 0);
+	error = dmu_objset_clone(clone1name, dmu_objset_ds(clone), NULL, 0);
 	dmu_objset_rele(clone, FTAG);
 	if (error) {
 		if (error == ENOSPC) {
@@ -3316,7 +3316,7 @@ ztest_dsl_dataset_promote_busy(ztest_ds_t *zd, uint64_t id)
 	if (error)
 		fatal(0, "dmu_open_snapshot(%s) = %d", snap3name, error);
 
-	error = dmu_objset_clone(clone2name, dmu_objset_ds(clone), 0);
+	error = dmu_objset_clone(clone2name, dmu_objset_ds(clone), NULL, 0);
 	dmu_objset_rele(clone, FTAG);
 	if (error) {
 		if (error == ENOSPC) {
@@ -4505,7 +4505,7 @@ ztest_dmu_snapshot_hold(ztest_ds_t *zd, uint64_t id)
 	if (error)
 		fatal(0, "dmu_objset_hold(%s) = %d", fullname, error);
 
-	error = dmu_objset_clone(clonename, dmu_objset_ds(origin), 0);
+	error = dmu_objset_clone(clonename, dmu_objset_ds(origin), NULL, 0);
 	dmu_objset_rele(origin, FTAG);
 	if (error) {
 		if (error == ENOSPC) {
@@ -4838,7 +4838,7 @@ ztest_ddt_repair(ztest_ds_t *zd, uint64_t id)
 	ztest_pattern_set(buf, psize, ~pattern);
 
 	(void) zio_wait(zio_rewrite(NULL, spa, 0, &blk,
-	    buf, psize, NULL, NULL, ZIO_PRIORITY_SYNC_WRITE,
+	    buf, psize, NULL, NULL, NULL, ZIO_PRIORITY_SYNC_WRITE,
 	    ZIO_FLAG_CANFAIL | ZIO_FLAG_INDUCE_DAMAGE, NULL));
 
 	zio_buf_free(buf, psize);
@@ -5638,7 +5638,7 @@ ztest_init(ztest_shared_t *zs)
 		VERIFY3U(0, ==, nvlist_add_uint64(props, buf, 0));
 	}
 	VERIFY3U(0, ==, spa_create(ztest_opts.zo_pool, nvroot, props,
-	    NULL, NULL));
+	    NULL, NULL, NULL));
 	nvlist_free(nvroot);
 
 	VERIFY3U(0, ==, spa_open(ztest_opts.zo_pool, &spa, FTAG));

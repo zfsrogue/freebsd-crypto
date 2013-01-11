@@ -6,6 +6,8 @@ KMOD=		opensolaris
 SRCS=		opensolaris.c		\
 		opensolaris_cmn_err.c	\
 		opensolaris_kmem.c	\
+		opensolaris_crypto.c	\
+		opensolaris_sun_ccm.c	\
 		opensolaris_misc.c	\
 		opensolaris_sunddi.c
 

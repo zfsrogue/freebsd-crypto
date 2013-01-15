@@ -1,9 +1,16 @@
 #include <sys/crypto/api.h>
 #include <sys/cmn_err.h>
 
-// ZFS_CRYPTO_VERBOSE is set in the crypto/api.h file
-#define ZFS_CRYPTO_VERBOSE
+#include <sys/mbuf.h>
+#include <crypto/rijndael/rijndael.h>
+#include <sys/sun_ccm.h>
 
+
+// ZFS_CRYPTO_VERBOSE is set in the crypto/api.h file
+//#define ZFS_CRYPTO_VERBOSE
+
+// EXTREF insists on having a rwlock. If not, it panics.
+static u_int dummy = 0;
 
 
 /*
@@ -49,33 +56,15 @@ static cipher_map_t cipher_map[] =
 #define NUM_CIPHER_MAP (sizeof(cipher_map) / sizeof(cipher_map_t))
 
 
-
-
-#if 0
-void spl_crypto_map_iv(unsigned char *iv, int len, void *param)
+/*
+ * We do not need a free function with our mbufs, but MEXTADD panics if
+ * given NULL. Please fix this FreeBSD.
+ */
+static void free_function(void *buf, void *arg)
 {
-    CK_AES_CCM_PARAMS *ccm_param = (CK_AES_CCM_PARAMS *)param;
-
-    // Make sure we are to use iv
-    if (!ccm_param || !ccm_param->nonce || !ccm_param->ulNonceSize) {
-        memset(iv, 0, len);
-        return;
-    }
-
-    // 'iv' is set as, from Solaris kernel sources;
-    // In ZFS-crypt, the "nonceSize" is always 12.
-    // q = (uint8_t)((15 - nonceSize) & 0xFF);
-    // cb[0] = 0x07 & (q-1);
-    // cb[1..12] = supplied nonce
-    // cb[13..14] = 0
-    // cb[15] = 1;
-    memset(iv, 0, len); // Make all bytes 0 first.
-    iv[0]  = 0x02;
-    memcpy(&iv[1], ccm_param->nonce, ccm_param->ulNonceSize); // 12 bytes
-    iv[15] = 0x01;
-
+    return;
 }
-#endif
+
 
 
 
@@ -95,62 +84,80 @@ int crypto_mac(crypto_mechanism_t *mech, crypto_data_t *data,
     return ret;
 }
 
-struct freebsd_uio {
-    unsigned char *addr;
-    size_t len;
-    off_t offset;
-    int uio_index;
-};
-
-typedef struct freebsd_uio fuio;
-
-
-static void crypto_block_xor20(unsigned char *src, unsigned char *dst,
-                               size_t len)
-{
-    int i;
-
-    for (i = 0; i < len; i++) {
-        dst[i] = src[i] ^ 0x20;
-    }
-}
 
 
 /*
- * Attempt to map "the current" Solaris UIO vector buffer, into
- * the made-up FreeBSD struct "fuio".
+ * Map the Solaris RAW and UIO vector buffers, into FreeBSD mbuf (linked list)
+ * Since FreeBSD does not have a kernel crypto API, this step is technically
+ * not required, and we could process the buffers directly. But maybe one
+ * day FreeBSD will add a proper API, where all ciphers take linked list of
+ * buffers. (or similar clustered buffer lists)
  */
-static int crypto_map_buffers(crypto_data_t *solaris_buffer, fuio *fbsd)
+static size_t crypto_map_buffers(crypto_data_t *solaris_buffer,
+                                 struct mbuf **m0)
 {
     uio_t *uio = NULL;
     iovec_t *iov = NULL;
+    struct mbuf *m, *prev = NULL;
+    int total = 0;
+    int i;
+
+    *m0 = NULL;
 
     switch(solaris_buffer->cd_format) {
     case CRYPTO_DATA_RAW: // One buffer.
         // Only one buffer available, asking for any other is wrong
-        if (fbsd->uio_index != 0) return 1;
+        MGET(m, M_WAITOK, MT_DATA);
+        if (!m) return 0;
 
-        fbsd->addr   = solaris_buffer->cd_raw.iov_base;
-        fbsd->len    = solaris_buffer->cd_length;
-        fbsd->offset = 0;
-        printf("crypto: mapping  %d to %p (%04lx)\n",
-               fbsd->uio_index, fbsd->addr, fbsd->len);
-        fbsd->uio_index++;
-        return fbsd->len;
+        m->m_ext.ref_cnt = &dummy;
+        m->m_len = solaris_buffer->cd_length;
+        // One would think MEXTADD would set m_len too..
+        MEXTADD(m,
+                solaris_buffer->cd_raw.iov_base,
+                solaris_buffer->cd_length,
+                free_function,
+                NULL, NULL, 0, EXT_EXTREF);
+#ifdef ZFS_CRYPTO_VERBOSE
+        printf("crypto: mapping to %p (%04x)\n",
+               mtod(m, void *), (uint32_t)m->m_len);
+#endif
+        *m0 = m;
+        return m->m_len;
 
     case CRYPTO_DATA_UIO: // Multiple buffers.
         uio = solaris_buffer->cd_uio;
         iov = uio->uio_iov;
-        // Make sure index is inside number of available buffers
-        if (fbsd->uio_index >= uio->uio_iovcnt) return 0;
 
-        fbsd->addr   = iov[fbsd->uio_index].iov_base;
-        fbsd->len    = iov[fbsd->uio_index].iov_len;
-        fbsd->offset = 0;
-        printf("crypto: mapping+ %d to %p (%04lx)\n",
-               fbsd->uio_index, fbsd->addr, fbsd->len);
-        fbsd->uio_index++;
-        return fbsd->len;
+        for (i = 0;
+             i < uio->uio_iovcnt;
+             i++) {
+
+            MGET(m, M_WAITOK, MT_DATA);
+            if (!m) return 0;
+
+            // If we have a previous, chain it.
+            if (!*m0) *m0 = m;
+            if (prev) prev->m_next = m;
+            prev = m;
+
+            m->m_ext.ref_cnt = &dummy;
+            m->m_len = iov[i].iov_len;
+            MEXTADD(m,
+                    iov[i].iov_base,
+                    iov[i].iov_len,
+                    free_function,
+                    NULL, NULL, 0, EXT_EXTREF);
+
+#ifdef ZFS_CRYPTO_VERBOSE
+            printf("crypto: mapping  %d to %p (%04x)\n",
+                   i, mtod(m, void *), (uint32_t)m->m_len);
+#endif
+
+            total += m->m_len;
+        } // for
+
+        return total;
 
     case CRYPTO_DATA_MBLK: // network mbufs, not supported
     default:
@@ -169,75 +176,51 @@ static int crypto_encrypt_stream(crypto_mechanism_t *mech,
                                  crypto_data_t *ciphertext,
                                  crypto_call_req_t *cr)
 {
-    //cipher_map_t *cm = NULL;
-    fuio plainfuio;
-    fuio cipherfuio;
-    int maclen;
-    size_t len_done;
+    struct mbuf *mplain  = NULL;
+    struct mbuf *mcipher = NULL;
+    size_t plainlen = 0, cryptlen = 0;
+    rijndael_ctx   cc_aes;
+    int ret;
+    CK_AES_CCM_PARAMS *ccm_param;
 
-#if _KERNEL
+    ASSERT(mech != NULL);
+
+    ccm_param = (CK_AES_CCM_PARAMS *)mech->cm_param;
+    ASSERT(ccm_param != NULL);
+
+#ifdef ZFS_CRYPTO_VERBOSE
     printf("crypto_encrypt_stream: %04lx\n", plaintext->cd_length);
 #endif
 
-    // Set index to 0, to start from the beginning.
-    plainfuio.uio_index = 0;
-    cipherfuio.uio_index = 0;
-    len_done = 0;
+    ASSERT(key->ck_format == CRYPTO_KEY_RAW);
 
     // Setup the first buffer
-    crypto_map_buffers(plaintext,  &plainfuio);
-    crypto_map_buffers(ciphertext, &cipherfuio);
+    if (!(plainlen  = crypto_map_buffers(plaintext,  &mplain)))
+        goto out;
+    if (!(cryptlen  = crypto_map_buffers(ciphertext, &mcipher)))
+        goto out;
 
-    // While we have INPUT length...
-    while(len_done < plaintext->cd_length) {
+    sun_ccm_setkey(&cc_aes, key->ck_data, key->ck_length / 8);
 
-        // Find which buffer is the smallest, this is the transfer size
-        if (plainfuio.len <= cipherfuio.len) { // plain is smaller
+    ret = sun_ccm_encrypt_and_auth(&cc_aes,
+                                   mplain,
+                                   mcipher,
+                                   plainlen,
+                                   ccm_param->nonce,
+                                   ccm_param->ulNonceSize);
 
-            printf("crypto: plain (%04x) <= cipher(%04x)\n",
-                   (unsigned int)plainfuio.len,
-                   (unsigned int)cipherfuio.len);
+#ifdef ZFS_CRYPTO_VERBOSE
+    printf("crypto_encrypt_stream: result %d\n",
+           ret);
+#endif
 
-            crypto_block_xor20(&plainfuio.addr[ plainfuio.offset ],
-                               &cipherfuio.addr[ cipherfuio.offset ],
-                               plainfuio.len);
-            cipherfuio.offset += plainfuio.len;
-            cipherfuio.len -= plainfuio.len;
-            len_done += plainfuio.len;
-            // Change plain to the next buffer, clears offset.
-            if (!crypto_map_buffers(plaintext,  &plainfuio)) break;
+    m_freem(mplain);
+    m_freem(mcipher);
 
-        } else { // cipher is smaller
+    if (!ret) return CRYPTO_SUCCESS;
 
-            printf("crypto: plain (%04x)  > cipher(%04x)\n",
-                   (unsigned int)plainfuio.len,
-                   (unsigned int)cipherfuio.len);
-
-            crypto_block_xor20(&plainfuio.addr[ plainfuio.offset ],
-                               &cipherfuio.addr[ cipherfuio.offset ],
-                               cipherfuio.len);
-            plainfuio.offset += cipherfuio.len;
-            plainfuio.len -= cipherfuio.len;
-            len_done += cipherfuio.len;
-            // Change cipher to the next buffer, clears offset.
-            if (!crypto_map_buffers(ciphertext,  &cipherfuio)) break;
-
-        }
-
-    }
-
-    // mac
-    maclen = ciphertext->cd_length - plaintext->cd_length;
-
-    // Do mac, if separate buffer, set that up
-    if (!cipherfuio.len) crypto_map_buffers(ciphertext,  &cipherfuio);
-
-    // Compute mac
-    memset(cipherfuio.addr, 0, MIN(maclen, cipherfuio.len));
-
-    printf("crypto_encrypt_stream: done %04x: mac %d\n",
-           (unsigned int)len_done, maclen);
-    return CRYPTO_SUCCESS;
+ out:
+    return CRYPTO_FAILED;
 }
 
 static int crypto_decrypt_stream(crypto_mechanism_t *mech,
@@ -246,69 +229,55 @@ static int crypto_decrypt_stream(crypto_mechanism_t *mech,
                                  crypto_data_t *plaintext,
                                  crypto_call_req_t *cr)
 {
-    //cipher_map_t *cm = NULL;
-    fuio plainfuio;
-    fuio cipherfuio;
-    int maclen;
-    size_t len_done;
+    struct mbuf *mplain  = NULL;
+    struct mbuf *mcipher = NULL;
+    size_t plainlen = 0, cryptlen = 0;
+    rijndael_ctx   cc_aes;
+    int ret;
+    CK_AES_CCM_PARAMS *ccm_param;
 
-#if _KERNEL
-    printf("crypto_decrypt_stream: %04lx\n", ciphertext->cd_length);
+    ASSERT(mech != NULL);
+
+    ccm_param = (CK_AES_CCM_PARAMS *)mech->cm_param;
+    ASSERT(ccm_param != NULL);
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printf("crypto_decrypt_stream: %04lx\n", plaintext->cd_length);
 #endif
 
-    // Set index to 0, to start from the beginning.
-    plainfuio.uio_index = 0;
-    cipherfuio.uio_index = 0;
-    len_done = 0;
+    ASSERT(key->ck_format == CRYPTO_KEY_RAW);
 
-    // Setup the first buffer
-    crypto_map_buffers(plaintext,  &plainfuio);
-    crypto_map_buffers(ciphertext, &cipherfuio);
+    if (!(cryptlen  = crypto_map_buffers(ciphertext, &mcipher)))
+        goto out;
 
-    // While we have OUTPUT length... (cipher is bigger due to mac)
-    while(len_done < plaintext->cd_length) {
+    if (!(plainlen  = crypto_map_buffers(plaintext,  &mplain)))
+        goto out;
 
-        // Find which buffer is the smallest, this is the transfer size
-        if (plainfuio.len <= cipherfuio.len) { // plain is smaller
+    sun_ccm_setkey(&cc_aes, key->ck_data, key->ck_length / 8);
 
-            printf("crypto: plain (%04x) <= cipher(%04x)\n",
-                   (unsigned int)plainfuio.len,
-                   (unsigned int)cipherfuio.len);
+    ret = sun_ccm_decrypt_and_auth(&cc_aes,
+                                   mcipher,
+                                   mplain,
+                                   plainlen,
+                                   ccm_param->nonce,
+                                   ccm_param->ulNonceSize);
 
-            crypto_block_xor20(&cipherfuio.addr[ cipherfuio.offset ],
-                               &plainfuio.addr[ plainfuio.offset ],
-                               plainfuio.len);
-            cipherfuio.offset += plainfuio.len;
-            cipherfuio.len -= plainfuio.len;
-            len_done += plainfuio.len;
-            // Change plain to the next buffer, clears offset.
-            if (!crypto_map_buffers(plaintext,  &plainfuio)) break;
+#ifdef ZFS_CRYPTO_VERBOSE
+    printf("crypto_decrypt_stream: result %d\n",
+           ret);
+#endif
 
-        } else { // cipher is smaller
+    m_freem(mplain);
+    m_freem(mcipher);
 
-            printf("crypto: plain (%04x)  > cipher(%04x)\n",
-                   (unsigned int)plainfuio.len,
-                   (unsigned int)cipherfuio.len);
-
-            crypto_block_xor20(&cipherfuio.addr[ cipherfuio.offset ],
-                               &plainfuio.addr[ plainfuio.offset ],
-                               cipherfuio.len);
-            plainfuio.offset += cipherfuio.len;
-            plainfuio.len -= cipherfuio.len;
-            len_done += cipherfuio.len;
-            // Change cipher to the next buffer, clears offset.
-            if (!crypto_map_buffers(ciphertext,  &cipherfuio)) break;
-
-        }
-
+    if (ret == EBADMSG) {
+        cmn_err(CE_WARN, "crypto: decrypt verify failed.");
+        return CRYPTO_INVALID_MAC;
     }
 
-    // mac
-    maclen = ciphertext->cd_length - plaintext->cd_length;
-
-    printf("crypto_decrypt_stream: done %04x: mac %d\n",
-           (unsigned int)len_done, maclen);
-    return CRYPTO_SUCCESS;
+    if (!ret) return CRYPTO_SUCCESS;
+ out:
+    return CRYPTO_FAILED;
 }
 
 
@@ -338,7 +307,7 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
 {
     cipher_map_t *cm = NULL;
 
-#if _KERNEL
+#ifdef ZFS_CRYPTO_VERBOSE
     printf("crypto_encrypt\n");
 #endif
 
@@ -364,7 +333,7 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
 {
     cipher_map_t *cm = NULL;
 
-#if _KERNEL
+#ifdef ZFS_CRYPTO_VERBOSE
     printf("crypto_decrypt\n");
 #endif
 
@@ -415,9 +384,7 @@ crypto_mech_type_t crypto_mech2id(crypto_mech_name_t name)
         return CRYPTO_MECH_INVALID;
 
 #ifdef ZFS_CRYPTO_VERBOSE
-#if _KERNEL
     printf("called crypto_mech2id '%s' (total %d)\n", name, (int)NUM_CIPHER_MAP);
-#endif
 #endif
 
     for (i = 0; i < NUM_CIPHER_MAP; i++) {

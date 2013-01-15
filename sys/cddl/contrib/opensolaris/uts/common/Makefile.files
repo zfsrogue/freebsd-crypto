@@ -98,8 +98,9 @@ ZFS_COMMON_OBJS +=		\
 	zrlock.o
 
 ZFS_SHARED_OBJS +=		\
-	zcrypt_common.o		\
-    	zfs_namecheck.o		\
+	zcrypt_common.o         \
+	zfeature_common.o       \
+	zfs_namecheck.o		\
 	zfs_deleg.o		\
 	zfs_prop.o		\
 	zfs_comutil.o		\

@@ -74,9 +74,7 @@ int crypto_mac(crypto_mechanism_t *mech, crypto_data_t *data,
 {
     int ret = CRYPTO_FAILED;
 
-#if _KERNEL
     printf("crypto_mac\n");
-#endif
 
 #ifdef ZFS_CRYPTO_VERBOSE
     printf("spl-crypto: mac returning %d\n", ret);
@@ -178,7 +176,7 @@ static int crypto_encrypt_stream(crypto_mechanism_t *mech,
 {
     struct mbuf *mplain  = NULL;
     struct mbuf *mcipher = NULL;
-    size_t plainlen = 0, cryptlen = 0;
+    size_t plainlen = 0, cryptlen = 0, maclen = 0;
     rijndael_ctx   cc_aes;
     int ret;
     CK_AES_CCM_PARAMS *ccm_param;
@@ -200,6 +198,8 @@ static int crypto_encrypt_stream(crypto_mechanism_t *mech,
     if (!(cryptlen  = crypto_map_buffers(ciphertext, &mcipher)))
         goto out;
 
+    maclen = cryptlen - plainlen;
+
     sun_ccm_setkey(&cc_aes, key->ck_data, key->ck_length / 8);
 
     ret = sun_ccm_encrypt_and_auth(&cc_aes,
@@ -207,7 +207,8 @@ static int crypto_encrypt_stream(crypto_mechanism_t *mech,
                                    mcipher,
                                    plainlen,
                                    ccm_param->nonce,
-                                   ccm_param->ulNonceSize);
+                                   ccm_param->ulNonceSize,
+                                   maclen);
 
 #ifdef ZFS_CRYPTO_VERBOSE
     printf("crypto_encrypt_stream: result %d\n",
@@ -231,7 +232,7 @@ static int crypto_decrypt_stream(crypto_mechanism_t *mech,
 {
     struct mbuf *mplain  = NULL;
     struct mbuf *mcipher = NULL;
-    size_t plainlen = 0, cryptlen = 0;
+    size_t plainlen = 0, cryptlen = 0, maclen = 0;
     rijndael_ctx   cc_aes;
     int ret;
     CK_AES_CCM_PARAMS *ccm_param;
@@ -253,6 +254,8 @@ static int crypto_decrypt_stream(crypto_mechanism_t *mech,
     if (!(plainlen  = crypto_map_buffers(plaintext,  &mplain)))
         goto out;
 
+    maclen = cryptlen - plainlen;
+
     sun_ccm_setkey(&cc_aes, key->ck_data, key->ck_length / 8);
 
     ret = sun_ccm_decrypt_and_auth(&cc_aes,
@@ -260,7 +263,8 @@ static int crypto_decrypt_stream(crypto_mechanism_t *mech,
                                    mplain,
                                    plainlen,
                                    ccm_param->nonce,
-                                   ccm_param->ulNonceSize);
+                                   ccm_param->ulNonceSize,
+                                   maclen);
 
 #ifdef ZFS_CRYPTO_VERBOSE
     printf("crypto_decrypt_stream: result %d\n",
@@ -287,6 +291,7 @@ static int crypto_encrypt_block(crypto_mechanism_t *mech,
                                 crypto_data_t *ciphertext,
                                 crypto_call_req_t *cr)
 {
+    printf("Uhoh, no BLOCK encrypt method\n");
     return CRYPTO_FAILED;
 }
 
@@ -296,6 +301,7 @@ static int crypto_decrypt_block(crypto_mechanism_t *mech,
                                 crypto_data_t *plaintext,
                                 crypto_call_req_t *cr)
 {
+    printf("Uhoh, no BLOCK decrypt method\n");
     return CRYPTO_FAILED;
 }
 

@@ -35,8 +35,8 @@
  *
  * authtag is computed and put at the end of the output "cipher" buffer.
  *
- * ZFS uses nonce of 12 bytes (length field is then 3 bytes). authtag of
- * 16 bytes.
+ * ZFS uses variable sized nonce, usually size 12.
+ * ZFS uses variable sized authtag, usually size 16.
  *
  */
 
@@ -70,10 +70,15 @@
 
 #include <sys/sun_ccm.h>
 
+
+/*
+ * Are we guaranteed that all xor operations are on 4 byte boundaries?
+ */
 static __inline void xor_block(uint8_t *dst,
                                uint8_t *src,
                                size_t size)
 {
+#if 1
     uint32_t *a = (uint32_t *)dst;
     uint32_t *b = (uint32_t *)src;
 
@@ -81,6 +86,7 @@ static __inline void xor_block(uint8_t *dst,
         *a++ ^= *b++;
     dst = (uint8_t *)a;
     src = (uint8_t *)b;
+#endif
     for (; size; size--)
         *dst++ ^= *src++;
 }
@@ -90,6 +96,7 @@ static __inline void xor_block2(uint8_t *dst,
                                 uint8_t *xor,
                                 size_t size)
 {
+#if 1
     uint32_t *a = (uint32_t *)dst;
     uint32_t *b = (uint32_t *)src;
     uint32_t *x = (uint32_t *)xor;
@@ -99,6 +106,7 @@ static __inline void xor_block2(uint8_t *dst,
     dst = (uint8_t *)a;
     src = (uint8_t *)b;
     xor = (uint8_t *)x;
+#endif
     for (; size; size--)
         *dst++ = *src++ ^ *xor++;
 }
@@ -152,39 +160,24 @@ void sun_ccm_setkey(rijndael_ctx *cc_aes,
 
 
 /*
- * Encrypt "plain" struct mbuf(s) into "cipher" struct mbuf(s).
- * If there is room, tack the auth at the end of "cipher".
+ * For authtag;
+ * B0 is computed with M and L in flags (first byte), then nonce is copied in
+ * followed by the cryptlen at the end, with most significant byte first.
  */
-int sun_ccm_encrypt_and_auth(rijndael_ctx *cc_aes,
-                             struct mbuf *plain,
-                             struct mbuf *cipher,
-                             uint64_t len,
-                             uint8_t *nonce, uint32_t noncelen)
+static void ccm_init_b0(rijndael_ctx *cc_aes,
+                        uint8_t *b0,
+                        uint64_t len,
+                        uint8_t *nonce,
+                        uint32_t noncelen,
+                        uint32_t authlen,
+                        uint8_t *a)
 {
-    uint8_t *src;
-    uint8_t *dst;
-    uint64_t srclen;
-    uint64_t dstlen;
-    uint32_t i;
-    uint64_t space;
-    uint8_t b0[AES_BLOCK_LEN], t[AES_BLOCK_LEN], e[AES_BLOCK_LEN];
-    uint8_t tmp[AES_BLOCK_LEN];
+    uint32_t be32;
     uint8_t flags;
-    struct mbuf *m_plain;  // Current mbuf being worked on.
-    struct mbuf *m_cipher;
-    uint64_t remainder;
-    uint64_t avail;
-
-    memset(t, 0, sizeof(t));
-    memset(e, 0, sizeof(e));
-
-    /*
-     * ***********************************************************
-     * For AUTH, setup b0 correctly.
-     */
+    int i;
 
     // Compute M' from M
-    flags = (CCM_AUTH_LEN-2)/2;  // M' = ((M-2)/2)
+    flags = (authlen-2)/2;  // M' = ((M-2)/2)
     flags &= 7;  // 3 bits only
     flags <<= 3; // Bits 5.4.3
 
@@ -198,27 +191,98 @@ int sun_ccm_encrypt_and_auth(rijndael_ctx *cc_aes,
     // Put the srclen into the sizelen number of bytes, if nonce is 12
     // 0    1 .... noncelen   length ... 15
     // 0    1 .... 12             13 ... 15
-    for (i = noncelen+1, space = len;
-         i < CCM_AUTH_LEN;
-         i++) {
-        b0[i] = (uint8_t) (space & 0xff);
-        space = space >> 8;
+    for (i = CCM_AUTH_LEN-1, be32 = (uint32_t)len;
+         i >= noncelen+1;
+         i--) {
+        b0[i] = (uint8_t) (be32 & 0xff);
+        be32 = be32 >> 8;
     }
 
+#ifdef ZFS_CRYPTO_VERBOSE
+    printf("B0 set to: len 0x%04x\n", (uint32_t)len);
+    for (i = 0; i < CCM_AUTH_LEN; i++)
+        printf("0x%02x ", b0[i]);
+    printf("\n");
+    DELAY(500);
+#endif
+
     // Let's start, setup round 0
-    rijndael_encrypt(cc_aes, b0, t);
+    rijndael_encrypt(cc_aes, b0, a);
 
-    /*
-     * ***********************************************************
-     */
+}
 
-    // Setup b0 for encryption, flags&=7, counter=0.
+/*
+ * For encryption/decryption;
+ * B0 flags (first byte) is cleared to only contain L
+ * The cryptlen field is cleared (in preparation to be used as counter)
+ */
+
+static void ccm_clear_b0(uint8_t *b0, uint32_t noncelen)
+{
+    int i;
     b0[0] &= 0x07;
     for (i = noncelen+1;
          i < CCM_AUTH_LEN;
          i++) {
         b0[i] = 0;
     }
+}
+
+/*
+ * authtag is computed at the end by encrypting B0 to S_0, then XOR
+ * with computed auth "T" to produce final "U".
+ */
+static void ccm_final_b0(rijndael_ctx *cc_aes,
+                         uint8_t *b0,
+                         uint8_t *a)
+{
+    rijndael_encrypt(cc_aes, b0, b0);  // Get S_0
+    xor_block(a, b0, AES_BLOCK_LEN);   // S_0 XOR T -> U
+}
+
+
+/*
+ * Encrypt "plain" struct mbuf(s) into "cipher" struct mbuf(s).
+ * If there is room, tack the auth at the end of "cipher".
+ */
+int sun_ccm_encrypt_and_auth(rijndael_ctx *cc_aes,
+                             struct mbuf *plain,
+                             struct mbuf *cipher,
+                             uint64_t len,
+                             uint8_t *nonce, uint32_t noncelen,
+                             uint32_t authlen)
+{
+    uint8_t *src;
+    uint8_t *dst;
+    uint64_t srclen;
+    uint64_t dstlen;
+    uint32_t i;
+    uint64_t space;
+    uint8_t b0[AES_BLOCK_LEN], t[AES_BLOCK_LEN], e[AES_BLOCK_LEN];
+    uint8_t tmp[AES_BLOCK_LEN];
+    struct mbuf *m_plain;  // Current mbuf being worked on.
+    struct mbuf *m_cipher;
+    uint64_t remainder;
+    uint64_t avail;
+
+    memset(t, 0, sizeof(t));
+    memset(e, 0, sizeof(e));
+
+    /*
+     * ***********************************************************
+     * For AUTH, setup b0 correctly.
+     */
+
+    ccm_init_b0(cc_aes, b0, len, nonce, noncelen, authlen, t);
+
+
+    /*
+     * ***********************************************************
+     * Clear "crypt len" field for encryption
+     */
+
+    ccm_clear_b0(b0, noncelen);
+
 
     /*
      * ***********************************************************
@@ -363,18 +427,13 @@ int sun_ccm_encrypt_and_auth(rijndael_ctx *cc_aes,
      * Note: rfc 3610 and NIST 800-38C require counter of
 	 * zero to encrypt auth tag.
 	 */
-    //b0[0] &= 0x07;
-    for (i = noncelen+1;
-         i < CCM_AUTH_LEN;
-         i++) {
-        b0[i] = 0;
-    }
+
+    ccm_clear_b0(b0, noncelen);
 
     // To compute authentication value U, we use
     //  S_0 := E( K, A_0 ), where A_0 has flags&7, and counter = 0;
     //    U := T XOR first-M-bytes( S_0 )
-    rijndael_encrypt(cc_aes, b0, b0);  // Get S_0
-    xor_block(t, b0, AES_BLOCK_LEN);   // S_0 XOR T -> U
+    ccm_final_b0(cc_aes, b0, t);
 
 #ifdef ZFS_CRYPTO_VERBOSE
     printf("ccmp_auth output:\n");
@@ -425,7 +484,8 @@ int sun_ccm_decrypt_and_auth(rijndael_ctx *cc_aes,
                              struct mbuf *cipher,
                              struct mbuf *plain,
                              uint64_t len,
-                             uint8_t *nonce, uint32_t noncelen)
+                             uint8_t *nonce, uint32_t noncelen,
+                             uint32_t authlen)
 {
     uint8_t *src;
     uint8_t *dst;
@@ -435,7 +495,6 @@ int sun_ccm_decrypt_and_auth(rijndael_ctx *cc_aes,
     uint64_t space;
     uint8_t b0[AES_BLOCK_LEN], b[AES_BLOCK_LEN], a[AES_BLOCK_LEN];
     uint8_t tmp[AES_BLOCK_LEN];
-    uint8_t flags;
     struct mbuf *m_plain;  // Current mbuf being worked on.
     struct mbuf *m_cipher;
     uint64_t remainder;
@@ -449,30 +508,8 @@ int sun_ccm_decrypt_and_auth(rijndael_ctx *cc_aes,
      * For AUTH, setup b0 correctly -> "a"
      */
 
-    // Compute M' from M
-    flags = (CCM_AUTH_LEN-2)/2;  // M' = ((M-2)/2)
-    flags &= 7;  // 3 bits only
-    flags <<= 3; // Bits 5.4.3
+    ccm_init_b0(cc_aes, b0, len, nonce, noncelen, authlen, a);
 
-    // Compute L' is number of bytes in the length field, minus one.
-    // So, 3 bytes, makes L' be 2.
-    flags |= (( 15-noncelen-1 )&7);
-
-    b0[0] = flags;
-
-    memcpy(&b0[1], nonce, noncelen);
-    // Put the srclen into the sizelen number of bytes, if nonce is 12
-    // 0    1 .... noncelen   length ... 15
-    // 0    1 .... 12             13 ... 15
-    for (i = noncelen+1, space = len;
-         i < CCM_AUTH_LEN;
-         i++) {
-        b0[i] = (uint8_t) (space & 0xff);
-        space = space >> 8;
-    }
-
-    // Let's start, setup round 0
-    rijndael_encrypt(cc_aes, b0, a);
 
 
     /*
@@ -480,12 +517,7 @@ int sun_ccm_decrypt_and_auth(rijndael_ctx *cc_aes,
      * Clear b0 flags and counter for decrypt
      */
 
-    b0[0] &= 0x07;
-    for (i = noncelen+1;
-         i < CCM_AUTH_LEN;
-         i++) {
-        b0[i] = 0;
-    }
+    ccm_clear_b0(b0, noncelen);
 
 
     /*
@@ -616,17 +648,13 @@ int sun_ccm_decrypt_and_auth(rijndael_ctx *cc_aes,
      * Note: rfc 3610 and NIST 800-38C require counter of
 	 * zero to encrypt auth tag.
 	 */
-    for (i = noncelen+1;
-         i < CCM_AUTH_LEN;
-         i++) {
-        b0[i] = 0;
-    }
+    ccm_clear_b0(b0, noncelen);
 
     // To compute authentication value U, we use
     //  S_0 := E( K, A_0 ), where A_0 has flags&7, and counter = 0;
     //    U := T XOR first-M-bytes( S_0 )
-    rijndael_encrypt(cc_aes, b0, b0);  // Get S_0
-    xor_block(a, b0, AES_BLOCK_LEN);   // S_0 XOR T -> U
+    ccm_final_b0(cc_aes, b0, a);
+
 
 #ifdef ZFS_CRYPTO_VERBOSE
     printf("computed_auth output:\n");
@@ -634,8 +662,6 @@ int sun_ccm_decrypt_and_auth(rijndael_ctx *cc_aes,
         printf("0x%02x ", a[i]);
     printf("\n");
 
-    printf("bug? srclen 0x%04x cipher at %p and next %p\n",
-           (uint32_t) srclen, m_cipher, m_cipher ? m_cipher->m_next : NULL);
 #endif
 
     // Do we need to advance buffer?

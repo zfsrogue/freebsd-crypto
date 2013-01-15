@@ -24,8 +24,8 @@ void cipher(char *keydata, size_t keydatalen,
  * RFC2898:
  *
  * This is a poor version of CKK_AES, and should be improved. The best answer
- * is probably to add a dependency on openssl or similar crypto framework. However
- * this needs to be agreed upon.
+ * is probably to add a dependency on openssl or similar crypto framework.
+ * However this needs to be agreed upon.
  *
  */
 //#define VERBOSE

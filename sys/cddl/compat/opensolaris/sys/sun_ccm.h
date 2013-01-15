@@ -12,12 +12,14 @@ int  sun_ccm_decrypt_and_auth(rijndael_ctx *cc_aes,
                               struct mbuf *cipher,
                               struct mbuf *plain,
                               uint64_t total_len,
-                              uint8_t *nonce, uint32_t noncelen);
+                              uint8_t *nonce, uint32_t noncelen,
+                              uint32_t authlen);
 
 int  sun_ccm_encrypt_and_auth(rijndael_ctx *cc_aes,
                               struct mbuf *plain,
                               struct mbuf *cipher,
                               uint64_t total_len,
-                              uint8_t *nonce, uint32_t noncelen);
+                              uint8_t *nonce, uint32_t noncelen,
+                              uint32_t authlen);
 
 #endif

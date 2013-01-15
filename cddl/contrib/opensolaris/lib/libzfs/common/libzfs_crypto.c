@@ -256,11 +256,9 @@ int crypto_pass2key(unsigned char *keydata, size_t keydatalen,
 
 
 /*
- * Linux does not have the same limitation that Solaris has, of limiting
- * getpass() to only 8 chars. Linux limit is 128 chars.
+ * FreeBSD does not have the same limitation that Solaris has, of limiting
+ * getpass() to only 8 chars. FreeBSD limit is 128 chars.
  *
- * However, it is listed as 'Obsolete' so an alternate implementation may be
- * required.
  */
 static char *getpassphrase(const char *prompt)
 {

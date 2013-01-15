@@ -65,7 +65,6 @@ ZFS_COMMON_OBJS +=		\
 	spa_history.o		\
 	spa_misc.o		\
 	space_map.o		\
-        trim_map.o              \
 	txg.o			\
 	uberblock.o		\
 	unique.o		\
@@ -98,8 +97,9 @@ ZFS_COMMON_OBJS +=		\
 	zrlock.o
 
 ZFS_SHARED_OBJS +=		\
-	zcrypt_common.o		\
-    	zfs_namecheck.o		\
+	zcrypt_common.o         \
+	zfeature_common.o       \
+	zfs_namecheck.o		\
 	zfs_deleg.o		\
 	zfs_prop.o		\
 	zfs_comutil.o		\

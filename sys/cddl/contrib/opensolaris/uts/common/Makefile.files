@@ -65,6 +65,7 @@ ZFS_COMMON_OBJS +=		\
 	spa_history.o		\
 	spa_misc.o		\
 	space_map.o		\
+        trim_map.o              \
 	txg.o			\
 	uberblock.o		\
 	unique.o		\

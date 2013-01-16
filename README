@@ -23,11 +23,9 @@ The crypto/api/ header files are from OpenSolaris.
 The crypto/api implementation is brand new, and supports "bare
 minimum" features as needed by ZFS only.
 
-Current support is in ALPHA. NO CIPHERS are used,and key generation
-function could do with more work. It is NOT compatible with Solaris pools.
-Currently it is the authentication MAC that appears to differ.
+Current support features CCM-AES support, compatible with Linux's ZOL.
 
-Current cipher is XOR$20 only, used for testing.
+Not yet implemented are GCM-AES ciphers, and CTR-AES (zvol).
 
 * MACs are in use, but compute_mac() is empty, not called?
 

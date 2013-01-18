@@ -57,10 +57,6 @@ solaris_cpu_t	solaris_cpu[MAXCPU];
 int		nsec_per_tick;
 
 
-
-
-
-
 /*
  *  OpenSolaris subsystem initialisation.
  */

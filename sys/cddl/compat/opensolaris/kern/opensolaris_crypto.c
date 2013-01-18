@@ -4,6 +4,7 @@
 #include <sys/mbuf.h>
 #include <crypto/rijndael/rijndael.h>
 #include <sys/sun_ccm.h>
+
 #include <sys/sun_gcm.h>
 #include <crypto/sha2/sha2.h>
 #include <sys/mbuf.h>
@@ -83,7 +84,6 @@ static cipher_map_t cipher_map[] =
 
 #define NUM_CIPHER_MAP (sizeof(cipher_map) / sizeof(cipher_map_t))
 
-
 /*
  * We do not need a free function with our mbufs, but MEXTADD panics if
  * given NULL. Please fix this FreeBSD.
@@ -92,7 +92,6 @@ static void free_function(void *buf, void *arg)
 {
     return;
 }
-
 
 
 

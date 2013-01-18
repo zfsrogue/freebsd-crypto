@@ -23,9 +23,8 @@ The crypto/api/ header files are from OpenSolaris.
 The crypto/api implementation is brand new, and supports "bare
 minimum" features as needed by ZFS only.
 
-Current support features CCM-AES support, compatible with Linux's ZOL.
-
-Not yet implemented are GCM-AES ciphers, and CTR-AES (zvol).
+All ciphers (CCM, GCM, CTR) are currently working, and compatible with
+the Linux ZOL implementation.
 
 * MACs are in use, but compute_mac() is empty, not called?
 

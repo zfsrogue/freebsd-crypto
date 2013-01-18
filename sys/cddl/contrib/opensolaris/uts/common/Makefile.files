@@ -123,7 +123,6 @@ ZFS_OBJS +=			\
 	rrwlock.o		\
 	zfs_vfsops.o		\
 	zfs_vnops.o		\
-	zcrypt_common.o         \
 	zvol.o
 
 ZUT_OBJS +=			\

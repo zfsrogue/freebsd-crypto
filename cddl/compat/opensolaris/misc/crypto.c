@@ -7,6 +7,7 @@
 #include "sha1.h"
 
 
+#define MIN(a, b)       ((a) < (b) ? (a) : (b))
 
 
 /*

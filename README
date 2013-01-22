@@ -23,46 +23,41 @@ The crypto/api/ header files are from OpenSolaris.
 The crypto/api implementation is brand new, and supports "bare
 minimum" features as needed by ZFS only.
 
-All ciphers (CCM, GCM, CTR) are currently working, and compatible with
-the Linux ZOL implementation.
+Current support is in BETA.
+
+Importing a Solaris pool can be done using:
+ Solaris: zpool create -o version=30 -O version=5 thepool $devices...
+ Solaris: zfs create -o encryption=aes-256-ccm thepool/secure
+ FreeBSD: zpool import -N thepool
+ FreeBSD: zpool upgrade thepool
+ FreeBSD: zfs mount thepool/secure
+
 
 * MACs are in use, but compute_mac() is empty, not called?
-
-* Key needs to be CK_AES prepared, better than current
 
 * All "// FIXME" should be inspected. In particular, known areas
   which differ are PROP_ALIAS, PROP_INHERIT, crypto vs userquota,
 
 * Removed KEY methods "https URI" (requires curl) and pkcs11 types.
 
-* The pool version is now 5000, and added feature flag
-  "feature@encryption".
 
-* feature@encryption goes active if any ZFS are created with encryption=on.
-
-* Allow for readonly import of active feature@encryption, so that the non-
-  encrypted filesystems could be recovered.
-
-
-Current output:
+Example:
 ```
 
-# dd if=/dev/zero of=~/src/pool-image.bin bs=1M count=1024
-
-# zpool create -f mypool ~/src/pool-image.bin
-
-# zfs create -o encryption=on mypool/BOOM
+# zfs create -o encryption=aes-256-gcm mypool/BOOM
   Enter passphrase for 'mypool/BOOM':
   Enter again:
+# zfs list
+  NAME          USED  AVAIL  REFER  MOUNTPOINT
+  mypool        142K   984M    31K  /mypool
+  mypool/BOOM    31K   984M    31K  /mypool/BOOM
 
-# mkdir /mypool/BOOM/This.Directory.Is.Hopefully.Encrypted
+# zpool get all mypool
 
-# hexdump -C ../pool-image.bin |less
+mypool  feature@async_destroy  enabled                local
+mypool  feature@encryption     active                 local
 
-0041b440  07 00 00 00 00 00 00 40  00 00 00 00 00 00 74 48  |.......@......tH|
-0041b450  49 53 2e 64 49 52 45 43  54 4f 52 59 2e 69 53 2e  |IS.dIRECTORY.iS.|
-0041b460  68 4f 50 45 46 55 4c 4c  59 2e 65 4e 43 52 59 50  |hOPEFULLY.eNCRYP|
-0041b470  54 45 44 00 00 00 00 00  00 00 00 00 00 00 00 00  |TED.............|
 ```
+
 
 zfs/rogue

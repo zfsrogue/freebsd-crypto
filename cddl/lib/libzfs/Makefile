@@ -14,7 +14,7 @@ SRCS=	deviceid.c \
 	mkdirp.c \
 	mnttab.c \
     crypto.c \
-    aes.c    \
+    sha1.c   \
 	zmount.c \
 	zone.c
 

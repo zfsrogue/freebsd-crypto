@@ -1469,16 +1469,20 @@ zfs_crypto_zckey(libzfs_handle_t *hdl, zfs_crypto_zckey_t cmd,
 		ret = 0;
 		goto out;
 	}
-
-    /*
-     * If we are creating a volume, pick the valid cipher
-     */
-    /* If encryption is on, and volume, change it to valid cipher. */
-    if ((type == ZFS_TYPE_VOLUME) && (crypt != ZIO_CRYPT_OFF)) {
-        crypt = ZIO_CRYPT_AES_128_CTR;
-    }
-
-
+	
+	/*
+	 * If we are creating a volume, pick the valid cipher
+	 */
+	/* If encryption is on, and volume, change it to valid cipher. */
+	if ((type == ZFS_TYPE_VOLUME) && (crypt != ZIO_CRYPT_OFF)) {
+	  crypt = ZIO_CRYPT_AES_128_CTR;
+	  /* We also have to write out the prop, in the case of inheritance
+	     or it will be using the wrong cipher */
+	  VERIFY(nvlist_add_uint64(props,
+		 zfs_prop_to_name(ZFS_PROP_ENCRYPTION), crypt) == 0);
+	}
+    
+    
 	/*
 	 * Need to pass down the inherited crypt value so that
 	 * dsl_crypto_key_gen() can see the same that we saw.

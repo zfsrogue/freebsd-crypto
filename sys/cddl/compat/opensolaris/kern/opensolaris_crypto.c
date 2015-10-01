@@ -88,9 +88,8 @@ static cipher_map_t cipher_map[] =
  * We do not need a free function with our mbufs, but MEXTADD panics if
  * given NULL. Please fix this FreeBSD.
  */
-static int free_function(struct mbuf *m, void *buf, void *arg)
+static void free_function(struct mbuf *m, void *buf, void *arg)
 {
-    return EXT_FREE_OK;
 }
 
 
@@ -120,7 +119,7 @@ static size_t crypto_map_buffers(crypto_data_t *solaris_buffer,
         MGET(m, M_WAITOK, MT_DATA);
         if (!m) return 0;
 
-        m->m_ext.ref_cnt = &dummy;
+        m->m_ext.ext_cnt = &dummy;
         m->m_len = solaris_buffer->cd_length;
         // One would think MEXTADD would set m_len too..
         MEXTADD(m,
@@ -151,7 +150,7 @@ static size_t crypto_map_buffers(crypto_data_t *solaris_buffer,
             if (prev) prev->m_next = m;
             prev = m;
 
-            m->m_ext.ref_cnt = &dummy;
+            m->m_ext.ext_cnt = &dummy;
             m->m_len = iov[i].iov_len;
             MEXTADD(m,
                     iov[i].iov_base,

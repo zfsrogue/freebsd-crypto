@@ -721,11 +721,11 @@ dmu_send_impl(void *tag, dsl_pool_t *dp, dsl_dataset_t *to_ds,
 			featureflags |= DMU_BACKUP_FEATURE_SA_SPILL;
 		}
 		crypt = ZIO_CRYPT_OFF;
-        rrw_enter(&ds->ds_dir->dd_pool->dp_config_rwlock, RW_READER, FTAG);
-        dsl_prop_get_ds(ds,
+        rrw_enter(&to_ds->ds_dir->dd_pool->dp_config_rwlock, RW_READER, FTAG);
+        dsl_prop_get_ds(to_ds,
 						zfs_prop_to_name(ZFS_PROP_ENCRYPTION), 8, 1, &crypt, NULL
 						/*,DSL_PROP_GET_EFFECTIVE*/);
-        rrw_exit(&ds->ds_dir->dd_pool->dp_config_rwlock, FTAG);
+        rrw_exit(&to_ds->ds_dir->dd_pool->dp_config_rwlock, FTAG);
         if (crypt != ZIO_CRYPT_OFF) {
 			DMU_SET_FEATUREFLAGS(
 				drr->drr_u.drr_begin.drr_versioninfo,

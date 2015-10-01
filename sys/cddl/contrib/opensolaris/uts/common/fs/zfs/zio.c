@@ -817,18 +817,6 @@ zio_write(zio_t *pio, spa_t *spa, uint64_t txg, blkptr_t *bp,
 {
 	zio_t *zio;
 
-	ASSERT(zp->zp_checksum >= ZIO_CHECKSUM_OFF &&
-	    zp->zp_checksum < ZIO_CHECKSUM_FUNCTIONS &&
-	    zp->zp_compress >= ZIO_COMPRESS_OFF &&
-	    zp->zp_compress < ZIO_COMPRESS_FUNCTIONS &&
-	    DMU_OT_IS_VALID(zp->zp_type) &&
-           zp->zp_crypt >= ZIO_CRYPT_OFF &&
-           zp->zp_crypt < ZIO_CRYPT_FUNCTIONS &&
-	    zp->zp_type < DMU_OT_NUMTYPES &&
-	    zp->zp_level < 32 &&
-	    zp->zp_copies > 0 &&
-	    zp->zp_copies <= spa_max_replication(spa));
-
 	zio = zio_create(pio, spa, txg, bp, data, size, done, private,
 	    ZIO_TYPE_WRITE, priority, flags, NULL, 0, zb,
 	    ZIO_STAGE_OPEN, (flags & ZIO_FLAG_DDT_CHILD) ?
